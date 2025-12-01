@@ -16,6 +16,10 @@ import { featuresRouter } from './features.routes';
 import { analyticsRouter } from './analytics.routes';
 import { dashboardRouter } from './dashboard.routes';
 import { testRouter } from './test.routes';
+import { settingsRouter } from './settings.routes';
+import { teamsRouter } from './teams.routes';
+import { adminRouter } from './admin.routes';
+import { legalRouter } from './legal.routes';
 
 const router = Router();
 
@@ -62,5 +66,17 @@ router.use('/v1/apikeys', apikeysRouter);
 // API v1 routes - Analytics & Dashboard
 router.use('/v1/analytics', analyticsRouter);
 router.use('/v1/dashboard', dashboardRouter);
+
+// API v1 routes - Settings
+router.use('/v1/settings', settingsRouter);
+
+// API v1 routes - Teams
+router.use('/v1/teams', teamsRouter);
+
+// API v1 routes - Admin (requires admin role)
+router.use('/v1/admin', adminRouter);
+
+// API v1 routes - Legal
+router.use('/v1/legal', legalRouter);
 
 export { router as apiRouter };

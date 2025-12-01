@@ -474,6 +474,22 @@ Authorization: Bearer <your-jwt-token>
       name: 'Test',
       description: 'Test and debugging endpoints',
     },
+    {
+      name: 'Settings',
+      description: 'User and application settings',
+    },
+    {
+      name: 'Teams',
+      description: 'Team and organization management',
+    },
+    {
+      name: 'Admin',
+      description: 'Administrative operations (admin only)',
+    },
+    {
+      name: 'Legal',
+      description: 'Legal documents and GDPR compliance',
+    },
   ],
 };
 
