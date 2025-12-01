@@ -16,9 +16,62 @@ const billingPortalSchema = z.object({
 });
 
 /**
- * POST /api/v1/billing/portal
- * Create a Stripe Billing Portal session for subscription management
- * Requires authentication
+ * @openapi
+ * /v1/billing/portal:
+ *   post:
+ *     summary: Create billing portal session
+ *     description: Creates a Stripe Billing Portal session that allows the user to manage their subscription, update payment methods, and view invoices.
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               return_url:
+ *                 type: string
+ *                 format: uri
+ *                 description: URL to redirect after leaving the billing portal
+ *                 example: "https://app.example.com/settings"
+ *           example:
+ *             return_url: "https://app.example.com/settings"
+ *     responses:
+ *       200:
+ *         description: Billing portal session created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     url:
+ *                       type: string
+ *                       format: uri
+ *                       description: URL to redirect user to Stripe Billing Portal
+ *                       example: "https://billing.stripe.com/session/abc123"
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         description: No billing account found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               success: false
+ *               message: "No billing account found. Please subscribe to a plan first."
+ *       503:
+ *         $ref: '#/components/responses/ServiceUnavailable'
  */
 router.post(
   '/portal',

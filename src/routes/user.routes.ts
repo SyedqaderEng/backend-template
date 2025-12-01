@@ -19,9 +19,74 @@ const updateProfileSchema = z.object({
 type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
 /**
- * GET /api/v1/users/me
- * Get the authenticated user's profile
- * Requires authentication
+ * @openapi
+ * /v1/users/me:
+ *   get:
+ *     summary: Get current user profile
+ *     description: Retrieves the authenticated user's profile information. If the profile doesn't exist, it will be created automatically from Clerk data.
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User profile retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                       example: "123e4567-e89b-12d3-a456-426614174000"
+ *                     clerkUserId:
+ *                       type: string
+ *                       example: "user_2abc123"
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                       example: "user@example.com"
+ *                     firstName:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "John"
+ *                     lastName:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "Doe"
+ *                     avatarUrl:
+ *                       type: string
+ *                       format: uri
+ *                       nullable: true
+ *                       example: "https://example.com/avatar.jpg"
+ *                     plan:
+ *                       type: string
+ *                       enum: [free, basic, pro, enterprise]
+ *                       example: "free"
+ *                     subscriptionStatus:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "active"
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                     updatedAt:
+ *                       type: string
+ *                       format: date-time
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -70,9 +135,94 @@ router.get('/me', authMiddleware, async (req: Request, res: Response, next: Next
 });
 
 /**
- * PATCH /api/v1/users/me
- * Update the authenticated user's profile
- * Requires authentication
+ * @openapi
+ * /v1/users/me:
+ *   patch:
+ *     summary: Update current user profile
+ *     description: Updates the authenticated user's profile information. Only provided fields will be updated.
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               first_name:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 100
+ *                 example: "John"
+ *               last_name:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 100
+ *                 example: "Doe"
+ *               avatar_url:
+ *                 type: string
+ *                 format: uri
+ *                 maxLength: 500
+ *                 nullable: true
+ *                 example: "https://example.com/avatar.jpg"
+ *           example:
+ *             first_name: "John"
+ *             last_name: "Doe"
+ *     responses:
+ *       200:
+ *         description: User profile updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     clerkUserId:
+ *                       type: string
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                     firstName:
+ *                       type: string
+ *                       nullable: true
+ *                     lastName:
+ *                       type: string
+ *                       nullable: true
+ *                     avatarUrl:
+ *                       type: string
+ *                       format: uri
+ *                       nullable: true
+ *                     plan:
+ *                       type: string
+ *                       enum: [free, basic, pro, enterprise]
+ *                     subscriptionStatus:
+ *                       type: string
+ *                       nullable: true
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                     updatedAt:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.patch('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {

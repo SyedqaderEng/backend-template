@@ -28,9 +28,77 @@ const fileUploadSchema = z.object({
 });
 
 /**
- * POST /api/v1/upload/file-url
- * Generate a presigned URL for file upload
- * Requires authentication
+ * @openapi
+ * /v1/upload/file-url:
+ *   post:
+ *     summary: Generate upload URL
+ *     description: Generates a presigned URL for uploading a file. The client should use this URL to upload the file directly.
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file_name
+ *               - file_type
+ *               - file_size
+ *             properties:
+ *               file_name:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 255
+ *                 description: Name of the file to upload
+ *                 example: "document.pdf"
+ *               file_type:
+ *                 type: string
+ *                 enum: [image/jpeg, image/png, image/gif, image/webp, application/pdf, text/plain, application/json]
+ *                 description: MIME type of the file
+ *                 example: "application/pdf"
+ *               file_size:
+ *                 type: number
+ *                 description: Size of the file in bytes (max 10MB)
+ *                 example: 102400
+ *           example:
+ *             file_name: "document.pdf"
+ *             file_type: "application/pdf"
+ *             file_size: 102400
+ *     responses:
+ *       200:
+ *         description: Presigned URL generated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     uploadUrl:
+ *                       type: string
+ *                       format: uri
+ *                       description: URL to upload the file to
+ *                       example: "https://api.uploadthing.com/v6/uploadFiles?..."
+ *                     fileKey:
+ *                       type: string
+ *                       description: Unique key for the file (includes user ID)
+ *                       example: "user_abc123/1234567890-document.pdf"
+ *                     expiresAt:
+ *                       type: string
+ *                       format: date-time
+ *                       description: Expiration time of the upload URL
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/ServiceUnavailable'
  */
 router.post(
   '/file-url',
@@ -96,10 +164,55 @@ router.post(
 );
 
 /**
- * GET /api/v1/upload/file/:fileKey
- * Get the public URL for an uploaded file
- * Note: fileKey should be URL-encoded since it contains slashes
- * Requires authentication
+ * @openapi
+ * /v1/upload/file/{fileKey}:
+ *   get:
+ *     summary: Get file URL
+ *     description: Gets the public URL for an uploaded file. The fileKey must be URL-encoded since it contains slashes. Users can only access their own files.
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: fileKey
+ *         in: path
+ *         required: true
+ *         description: URL-encoded file key (e.g., user_abc123%2F1234567890-document.pdf)
+ *         schema:
+ *           type: string
+ *         example: "user_abc123%2F1234567890-document.pdf"
+ *     responses:
+ *       200:
+ *         description: File URL retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     fileUrl:
+ *                       type: string
+ *                       format: uri
+ *                       description: Public URL to access the file
+ *                       example: "https://utfs.io/f/user_abc123/1234567890-document.pdf"
+ *                     fileKey:
+ *                       type: string
+ *                       description: The file key (decoded)
+ *                       example: "user_abc123/1234567890-document.pdf"
+ *       400:
+ *         description: File key is required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       403:
+ *         $ref: '#/components/responses/Forbidden'
  */
 router.get(
   '/file/:fileKey',
@@ -137,10 +250,48 @@ router.get(
 );
 
 /**
- * DELETE /api/v1/upload/file/:fileKey
- * Delete an uploaded file
- * Note: fileKey should be URL-encoded since it contains slashes
- * Requires authentication
+ * @openapi
+ * /v1/upload/file/{fileKey}:
+ *   delete:
+ *     summary: Delete file
+ *     description: Deletes an uploaded file. The fileKey must be URL-encoded since it contains slashes. Users can only delete their own files.
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: fileKey
+ *         in: path
+ *         required: true
+ *         description: URL-encoded file key (e.g., user_abc123%2F1234567890-document.pdf)
+ *         schema:
+ *           type: string
+ *         example: "user_abc123%2F1234567890-document.pdf"
+ *     responses:
+ *       200:
+ *         description: File deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "File deleted successfully"
+ *       400:
+ *         description: File key is required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       403:
+ *         $ref: '#/components/responses/Forbidden'
+ *       503:
+ *         $ref: '#/components/responses/ServiceUnavailable'
  */
 router.delete(
   '/file/:fileKey',
@@ -183,9 +334,31 @@ router.delete(
 );
 
 /**
- * GET /api/v1/upload/config
- * Get upload configuration (allowed types, max size)
- * Public endpoint
+ * @openapi
+ * /v1/upload/config:
+ *   get:
+ *     summary: Get upload configuration
+ *     description: Returns the upload configuration including allowed file types and maximum file size. This is a public endpoint that does not require authentication.
+ *     tags: [Upload]
+ *     responses:
+ *       200:
+ *         description: Upload configuration retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   $ref: '#/components/schemas/UploadConfig'
+ *             example:
+ *               success: true
+ *               data:
+ *                 allowedFileTypes: ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf", "text/plain", "application/json"]
+ *                 maxFileSize: 10485760
+ *                 maxFileSizeMB: 10
  */
 router.get('/config', async (_req: Request, res: Response) => {
   res.status(200).json({

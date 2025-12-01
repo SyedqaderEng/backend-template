@@ -26,9 +26,71 @@ const checkoutSessionSchema = z.object({
 });
 
 /**
- * POST /api/v1/subscriptions/checkout-session
- * Create a Stripe Checkout Session for subscription
- * Requires authentication
+ * @openapi
+ * /v1/subscriptions/checkout-session:
+ *   post:
+ *     summary: Create checkout session
+ *     description: Creates a Stripe Checkout Session for subscribing to a plan. Returns a session ID and URL to redirect the user to Stripe's hosted checkout page.
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - plan_id
+ *             properties:
+ *               plan_id:
+ *                 type: string
+ *                 enum: [basic, pro, enterprise]
+ *                 description: The plan to subscribe to
+ *                 example: "pro"
+ *               success_url:
+ *                 type: string
+ *                 format: uri
+ *                 description: URL to redirect after successful checkout
+ *                 example: "https://app.example.com/success"
+ *               cancel_url:
+ *                 type: string
+ *                 format: uri
+ *                 description: URL to redirect if checkout is cancelled
+ *                 example: "https://app.example.com/cancel"
+ *           example:
+ *             plan_id: "pro"
+ *             success_url: "https://app.example.com/success"
+ *             cancel_url: "https://app.example.com/cancel"
+ *     responses:
+ *       200:
+ *         description: Checkout session created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     sessionId:
+ *                       type: string
+ *                       description: Stripe Checkout Session ID
+ *                       example: "cs_test_abc123"
+ *                     url:
+ *                       type: string
+ *                       format: uri
+ *                       description: URL to redirect user to Stripe Checkout
+ *                       example: "https://checkout.stripe.com/pay/cs_test_abc123"
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/ServiceUnavailable'
  */
 router.post(
   '/checkout-session',
@@ -80,9 +142,104 @@ router.post(
 );
 
 /**
- * GET /api/v1/subscriptions/current-plan
- * Get the authenticated user's current subscription status
- * Requires authentication
+ * @openapi
+ * /v1/subscriptions/current-plan:
+ *   get:
+ *     summary: Get current subscription
+ *     description: Retrieves the authenticated user's current subscription status, plan details, and usage limits.
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current subscription retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     plan:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                           enum: [free, basic, pro, enterprise]
+ *                           example: "pro"
+ *                         name:
+ *                           type: string
+ *                           example: "Pro"
+ *                         description:
+ *                           type: string
+ *                           example: "For growing businesses"
+ *                         price:
+ *                           type: number
+ *                           description: Price in cents
+ *                           example: 2900
+ *                         currency:
+ *                           type: string
+ *                           example: "usd"
+ *                         interval:
+ *                           type: string
+ *                           example: "month"
+ *                         features:
+ *                           type: array
+ *                           items:
+ *                             type: string
+ *                           example: ["Unlimited projects", "Priority support"]
+ *                     status:
+ *                       type: string
+ *                       enum: [active, cancelled, past_due, trialing, incomplete]
+ *                       nullable: true
+ *                       example: "active"
+ *                     isActive:
+ *                       type: boolean
+ *                       example: true
+ *                     isPastDue:
+ *                       type: boolean
+ *                       example: false
+ *                     isCancelled:
+ *                       type: boolean
+ *                       example: false
+ *                     isTrialing:
+ *                       type: boolean
+ *                       example: false
+ *                     currentPeriodEnd:
+ *                       type: string
+ *                       format: date-time
+ *                       nullable: true
+ *                       example: "2024-02-15T00:00:00.000Z"
+ *                     cancelAtPeriodEnd:
+ *                       type: boolean
+ *                       example: false
+ *                     limits:
+ *                       type: object
+ *                       properties:
+ *                         requestsPerDay:
+ *                           type: number
+ *                           example: 10000
+ *                         apiAccessEnabled:
+ *                           type: boolean
+ *                           example: true
+ *                         prioritySupport:
+ *                           type: boolean
+ *                           example: true
+ *                         customIntegrations:
+ *                           type: boolean
+ *                           example: false
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.get(
   '/current-plan',
@@ -130,9 +287,59 @@ router.get(
 );
 
 /**
- * GET /api/v1/subscriptions/plans
- * Get all available subscription plans
- * Public endpoint (no auth required)
+ * @openapi
+ * /v1/subscriptions/plans:
+ *   get:
+ *     summary: List available plans
+ *     description: Returns all available subscription plans. This is a public endpoint that does not require authentication.
+ *     tags: [Subscriptions]
+ *     responses:
+ *       200:
+ *         description: List of available plans
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         enum: [free, basic, pro, enterprise]
+ *                         example: "pro"
+ *                       name:
+ *                         type: string
+ *                         example: "Pro"
+ *                       description:
+ *                         type: string
+ *                         example: "For growing businesses"
+ *                       price:
+ *                         type: number
+ *                         description: Price in cents (0 for free plan)
+ *                         example: 2900
+ *                       currency:
+ *                         type: string
+ *                         example: "usd"
+ *                       interval:
+ *                         type: string
+ *                         example: "month"
+ *                       features:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                         example: ["Unlimited projects", "Priority support"]
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.get('/plans', async (_req: Request, res: Response, next: NextFunction) => {
   try {
