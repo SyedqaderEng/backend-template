@@ -42,7 +42,14 @@ export function createApp(): Application {
   app.use(cors(corsOptions));
 
   // Body parsing middleware with size limits
-  app.use(express.json({ limit: bodyLimits.json }));
+  // Skip JSON parsing for webhook endpoints (they need raw body for signature verification)
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/webhooks/')) {
+      next();
+    } else {
+      express.json({ limit: bodyLimits.json })(req, res, next);
+    }
+  });
   app.use(express.urlencoded({ extended: true, limit: bodyLimits.urlencoded }));
 
   // Request logging middleware with context

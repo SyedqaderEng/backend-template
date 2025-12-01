@@ -2,11 +2,15 @@ import { Router } from 'express';
 import { healthRouter } from './health.routes';
 import { userRouter } from './user.routes';
 import { subscriptionRouter } from './subscription.routes';
+import { webhookRouter } from './webhook.routes';
 
 const router = Router();
 
 // Health check routes
 router.use('/health', healthRouter);
+
+// Webhook routes (public, no auth)
+router.use('/webhooks', webhookRouter);
 
 // API v1 routes
 router.use('/v1/users', userRouter);
