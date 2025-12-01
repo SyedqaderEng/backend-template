@@ -4,6 +4,7 @@ import { userRouter } from './user.routes';
 import { subscriptionRouter } from './subscription.routes';
 import { webhookRouter } from './webhook.routes';
 import { billingRouter } from './billing.routes';
+import { uploadRouter } from './upload.routes';
 
 const router = Router();
 
@@ -17,5 +18,6 @@ router.use('/webhooks', webhookRouter);
 router.use('/v1/users', userRouter);
 router.use('/v1/subscriptions', subscriptionRouter);
 router.use('/v1/billing', billingRouter);
+router.use('/v1/upload', uploadRouter);
 
 export { router as apiRouter };
