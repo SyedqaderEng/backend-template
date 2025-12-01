@@ -21,7 +21,7 @@ export interface EmailSendResult {
 /**
  * Send an email using Resend
  */
-async function sendEmail(
+export async function sendEmail(
   to: string,
   subject: string,
   html: string,

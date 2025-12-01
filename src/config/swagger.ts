@@ -411,8 +411,20 @@ Authorization: Bearer <your-jwt-token>
       description: 'Health check endpoints',
     },
     {
+      name: 'Meta',
+      description: 'Public metadata and status endpoints',
+    },
+    {
+      name: 'Auth',
+      description: 'Authentication and session management',
+    },
+    {
       name: 'Users',
       description: 'User profile management',
+    },
+    {
+      name: 'Roles',
+      description: 'Role-based access control (RBAC)',
     },
     {
       name: 'Subscriptions',
@@ -420,15 +432,47 @@ Authorization: Bearer <your-jwt-token>
     },
     {
       name: 'Billing',
-      description: 'Billing portal and payment management',
+      description: 'Billing portal, invoices, and payment methods',
+    },
+    {
+      name: 'Features',
+      description: 'Feature flags and plan-based access control',
     },
     {
       name: 'Upload',
       description: 'File upload operations',
     },
     {
+      name: 'Email',
+      description: 'Email sending and preferences',
+    },
+    {
+      name: 'Notifications',
+      description: 'In-app notification management',
+    },
+    {
+      name: 'Logs',
+      description: 'Activity and audit logging',
+    },
+    {
+      name: 'API Keys',
+      description: 'API key management for programmatic access',
+    },
+    {
+      name: 'Analytics',
+      description: 'Usage analytics and metrics',
+    },
+    {
+      name: 'Dashboard',
+      description: 'Dashboard data and overview endpoints',
+    },
+    {
       name: 'Webhooks',
       description: 'Webhook endpoints for external services',
+    },
+    {
+      name: 'Test',
+      description: 'Test and debugging endpoints',
     },
   ],
 };
