@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { authMiddleware, requireUserId } from '../middleware';
+import { authMiddleware, requireUserId, strictRateLimiter } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import {
   createCheckoutSession,
@@ -94,6 +94,7 @@ const checkoutSessionSchema = z.object({
  */
 router.post(
   '/checkout-session',
+  strictRateLimiter, // Strict rate limiting: 10 requests per minute
   authMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

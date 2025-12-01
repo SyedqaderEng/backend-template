@@ -10,6 +10,7 @@ import {
   errorHandlerMiddleware,
   notFoundHandler,
   securityHeadersMiddleware,
+  generalRateLimiter,
 } from './middleware';
 import { logger } from './utils/logger';
 
@@ -65,6 +66,9 @@ export function createApp(): Application {
     res.setHeader('Content-Type', 'application/json');
     res.send(swaggerSpec);
   });
+
+  // Rate limiting for API routes (general: 60 requests per minute)
+  app.use('/api', generalRateLimiter);
 
   // API routes
   app.use('/api', apiRouter);
