@@ -1,9 +1,14 @@
 import Stripe from 'stripe';
 import { getWebhookSecret, verifyWebhookSignature } from './client';
-import { getPlanByPriceId } from './plans';
+import { getPlan, getPlanByPriceId } from './plans';
 import { profileRepository } from '../../database';
 import { logger } from '../../utils/logger';
 import { SubscriptionStatus } from '../../database/types';
+import {
+  sendSubscriptionActivatedEmail,
+  sendSubscriptionCancelledEmail,
+  sendPaymentFailedEmail,
+} from '../email';
 
 /**
  * Webhook event result
@@ -73,6 +78,20 @@ async function handleCheckoutSessionCompleted(
       customerId,
       subscriptionId,
     }, 'User subscription activated');
+
+    // Send subscription activated email
+    const profile = await profileRepository.findByClerkUserId(clerkUserId);
+    if (profile?.email && planId) {
+      const plan = getPlan(planId as 'free' | 'basic' | 'pro' | 'enterprise');
+      await sendSubscriptionActivatedEmail({
+        email: profile.email,
+        firstName: profile.first_name || undefined,
+        lastName: profile.last_name || undefined,
+        planName: plan.name,
+        planPrice: plan.price,
+        currency: plan.currency,
+      });
+    }
   } catch (error) {
     const err = error as Error;
     logger.error({
@@ -183,12 +202,27 @@ async function handleSubscriptionDeleted(
   logger.info({ clerkUserId: targetUserId, subscriptionId: subscription.id }, 'Processing subscription deletion');
 
   try {
+    // Get user profile before updating for email
+    const profile = await profileRepository.findByClerkUserId(targetUserId);
+    const previousPlan = profile?.plan || 'free';
+
     await profileRepository.updateSubscription(targetUserId, {
       plan: 'free',
       status: 'cancelled',
     });
 
     logger.info({ clerkUserId: targetUserId }, 'User subscription cancelled, reverted to free plan');
+
+    // Send subscription cancelled email
+    if (profile?.email) {
+      const plan = getPlan(previousPlan as 'free' | 'basic' | 'pro' | 'enterprise');
+      await sendSubscriptionCancelledEmail({
+        email: profile.email,
+        firstName: profile.first_name || undefined,
+        lastName: profile.last_name || undefined,
+        planName: plan.name,
+      });
+    }
   } catch (error) {
     const err = error as Error;
     logger.error({
@@ -231,6 +265,17 @@ async function handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
     logger.info({
       clerkUserId: profile.clerk_user_id,
     }, 'User subscription marked as past_due due to payment failure');
+
+    // Send payment failed email
+    if (profile.email) {
+      const plan = getPlan(profile.plan as 'free' | 'basic' | 'pro' | 'enterprise');
+      await sendPaymentFailedEmail({
+        email: profile.email,
+        firstName: profile.first_name || undefined,
+        lastName: profile.last_name || undefined,
+        planName: plan.name,
+      });
+    }
   } catch (error) {
     const err = error as Error;
     logger.error({
