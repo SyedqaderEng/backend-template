@@ -20,9 +20,19 @@ interface HealthCheckResponse {
 }
 
 /**
- * GET /api/health
- * Basic health check endpoint for server verification
- * Returns server status, uptime, and basic system information
+ * @openapi
+ * /health:
+ *   get:
+ *     summary: Basic health check
+ *     description: Returns server status, uptime, and basic system information
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: Server is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthResponse'
  */
 router.get('/', (_req: Request, res: Response) => {
   const healthCheck: HealthCheckResponse = {
