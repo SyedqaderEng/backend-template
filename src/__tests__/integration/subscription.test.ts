@@ -27,8 +27,24 @@ vi.mock('../../services/stripe/client', () => ({
   resetStripeClient: vi.fn(),
 }));
 
+// Mock subscription service
+vi.mock('../../services/stripe/subscription', () => ({
+  getCurrentSubscription: vi.fn(),
+  getPlanLimits: vi.fn((planId: string) => ({
+    requestsPerDay: planId === 'free' ? 100 : planId === 'basic' ? 1000 : -1,
+    apiAccessEnabled: planId !== 'free',
+    prioritySupport: planId === 'pro' || planId === 'enterprise',
+    customIntegrations: planId === 'pro' || planId === 'enterprise',
+  })),
+  isSubscriptionActive: vi.fn(),
+  isSubscriptionPastDue: vi.fn(),
+  isSubscriptionCancelled: vi.fn(),
+  hasFeatureAccess: vi.fn(),
+}));
+
 import { createCheckoutSession } from '../../services/stripe/checkout';
 import { isStripeConfigured } from '../../services/stripe/client';
+import { getCurrentSubscription } from '../../services/stripe/subscription';
 
 describe('Subscription API Endpoints', () => {
   let app: Application;
@@ -235,6 +251,174 @@ describe('Subscription API Endpoints', () => {
         .get('/api/v1/subscriptions/plans');
 
       expect(response.status).toBe(200);
+    });
+  });
+
+  describe('GET /api/v1/subscriptions/current-plan', () => {
+    const mockFreePlan = {
+      id: 'free',
+      name: 'Free',
+      description: 'Get started with basic features',
+      price: 0,
+      currency: 'usd',
+      interval: 'month',
+      features: ['Basic features'],
+      priceId: null,
+      productId: null,
+    };
+
+    const mockProPlan = {
+      id: 'pro',
+      name: 'Pro',
+      description: 'For professionals',
+      price: 2999,
+      currency: 'usd',
+      interval: 'month',
+      features: ['All features'],
+      priceId: 'price_pro',
+      productId: 'prod_pro',
+    };
+
+    it('should return 401 without authorization token', async () => {
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan');
+
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe('Authorization token required');
+    });
+
+    it('should return current subscription for authenticated user', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockProPlan,
+        status: 'active',
+        isActive: true,
+        isPastDue: false,
+        isCancelled: false,
+        isTrialing: false,
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+        currentPeriodEnd: new Date('2024-12-31'),
+        cancelAtPeriodEnd: false,
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.plan.id).toBe('pro');
+      expect(response.body.data.status).toBe('active');
+      expect(response.body.data.isActive).toBe(true);
+    });
+
+    it('should return free plan for users without subscription', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockFreePlan,
+        status: null,
+        isActive: true,
+        isPastDue: false,
+        isCancelled: false,
+        isTrialing: false,
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.plan.id).toBe('free');
+      expect(response.body.data.plan.price).toBe(0);
+    });
+
+    it('should include plan limits in response', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockProPlan,
+        status: 'active',
+        isActive: true,
+        isPastDue: false,
+        isCancelled: false,
+        isTrialing: false,
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.limits).toBeDefined();
+      expect(response.body.data.limits.requestsPerDay).toBe(-1);
+      expect(response.body.data.limits.apiAccessEnabled).toBe(true);
+      expect(response.body.data.limits.prioritySupport).toBe(true);
+    });
+
+    it('should indicate past_due status', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockProPlan,
+        status: 'past_due',
+        isActive: false,
+        isPastDue: true,
+        isCancelled: false,
+        isTrialing: false,
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('past_due');
+      expect(response.body.data.isPastDue).toBe(true);
+      expect(response.body.data.isActive).toBe(false);
+    });
+
+    it('should indicate cancelled status', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockProPlan,
+        status: 'cancelled',
+        isActive: false,
+        isPastDue: false,
+        isCancelled: true,
+        isTrialing: false,
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+        cancelAtPeriodEnd: true,
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.isCancelled).toBe(true);
+      expect(response.body.data.cancelAtPeriodEnd).toBe(true);
+    });
+
+    it('should indicate trialing status', async () => {
+      vi.mocked(getCurrentSubscription).mockResolvedValue({
+        plan: mockProPlan,
+        status: 'trialing',
+        isActive: true,
+        isPastDue: false,
+        isCancelled: false,
+        isTrialing: true,
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+
+      const response = await request(app)
+        .get('/api/v1/subscriptions/current-plan')
+        .set('Authorization', 'Bearer test-token');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.isTrialing).toBe(true);
+      expect(response.body.data.isActive).toBe(true);
     });
   });
 });

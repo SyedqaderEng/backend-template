@@ -7,6 +7,8 @@ import {
   getDefaultSuccessUrl,
   getDefaultCancelUrl,
   isStripeConfigured,
+  getCurrentSubscription,
+  getPlanLimits,
 } from '../services';
 import { logger } from '../utils/logger';
 
@@ -69,6 +71,56 @@ router.post(
         data: {
           sessionId: result.sessionId,
           url: result.url,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/v1/subscriptions/current-plan
+ * Get the authenticated user's current subscription status
+ * Requires authentication
+ */
+router.get(
+  '/current-plan',
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clerkUserId = requireUserId(req);
+
+      logger.debug({ clerkUserId }, 'Fetching current subscription');
+
+      const subscription = await getCurrentSubscription(clerkUserId);
+      const limits = getPlanLimits(subscription.plan.id as 'free' | 'basic' | 'pro' | 'enterprise');
+
+      res.status(200).json({
+        success: true,
+        data: {
+          plan: {
+            id: subscription.plan.id,
+            name: subscription.plan.name,
+            description: subscription.plan.description,
+            price: subscription.plan.price,
+            currency: subscription.plan.currency,
+            interval: subscription.plan.interval,
+            features: subscription.plan.features,
+          },
+          status: subscription.status,
+          isActive: subscription.isActive,
+          isPastDue: subscription.isPastDue,
+          isCancelled: subscription.isCancelled,
+          isTrialing: subscription.isTrialing,
+          currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() || null,
+          cancelAtPeriodEnd: subscription.cancelAtPeriodEnd || false,
+          limits: {
+            requestsPerDay: limits.requestsPerDay,
+            apiAccessEnabled: limits.apiAccessEnabled,
+            prioritySupport: limits.prioritySupport,
+            customIntegrations: limits.customIntegrations,
+          },
         },
       });
     } catch (error) {
