@@ -1,6 +1,8 @@
+import http from 'http';
 import { createApp } from './app';
 import { env } from './config/env';
 import { logger } from './utils/logger';
+import { createGraphQLServer, applyGraphQLMiddleware } from './graphql';
 
 /**
  * Start the HTTP server
@@ -8,7 +10,16 @@ import { logger } from './utils/logger';
 async function startServer(): Promise<void> {
   const app = createApp();
 
-  const server = app.listen(env.PORT, () => {
+  // Create HTTP server for Apollo
+  const httpServer = http.createServer(app);
+
+  // Initialize and start GraphQL server
+  const graphqlServer = await createGraphQLServer(app, httpServer);
+  applyGraphQLMiddleware(app, graphqlServer, '/graphql');
+
+  logger.info('📊 GraphQL endpoint available at /graphql');
+
+  const server = httpServer.listen(env.PORT, () => {
     logger.info({
       port: env.PORT,
       environment: env.NODE_ENV,
