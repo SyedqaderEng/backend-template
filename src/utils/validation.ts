@@ -10,15 +10,11 @@ export interface ValidationError {
 }
 
 /**
- * Validation result type
+ * Validation result type - discriminated union for success/failure
  */
-export interface ValidationResult<T> {
-  success: true;
-  data: T;
-} | {
-  success: false;
-  errors: ValidationError[];
-}
+export type ValidationResult<T> =
+  | { success: true; data: T }
+  | { success: false; errors: ValidationError[] };
 
 /**
  * Validate data against a Zod schema
