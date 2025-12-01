@@ -1,12 +1,13 @@
 import express, { Application } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import { env } from './config/env';
+import { corsOptions, helmetOptions, bodyLimits, trustProxy, performSecurityChecks, isProduction } from './config';
 import { apiRouter } from './routes';
 import {
   requestLoggerMiddleware,
   errorHandlerMiddleware,
   notFoundHandler,
+  securityHeadersMiddleware,
 } from './middleware';
 import { logger } from './utils/logger';
 
@@ -16,22 +17,35 @@ import { logger } from './utils/logger';
 export function createApp(): Application {
   const app = express();
 
-  // Security middleware
-  app.use(helmet());
+  // Trust proxy in production (for rate limiting, IP detection behind load balancer)
+  if (trustProxy) {
+    app.set('trust proxy', trustProxy);
+  }
 
-  // CORS configuration - will be properly configured in P-B-2
-  app.use(cors({
-    origin: env.FRONTEND_URL,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  }));
+  // Perform security checks on startup
+  try {
+    performSecurityChecks();
+  } catch (error) {
+    if (isProduction) {
+      throw error;
+    }
+    logger.warn({ error }, 'Security checks failed in non-production environment');
+  }
 
-  // Body parsing middleware
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  // Security middleware - Helmet for HTTP security headers
+  app.use(helmet(helmetOptions));
 
-  // Request logging middleware
+  // Additional security headers middleware
+  app.use(securityHeadersMiddleware);
+
+  // CORS configuration - validates against allowed origins
+  app.use(cors(corsOptions));
+
+  // Body parsing middleware with size limits
+  app.use(express.json({ limit: bodyLimits.json }));
+  app.use(express.urlencoded({ extended: true, limit: bodyLimits.urlencoded }));
+
+  // Request logging middleware with context
   app.use(requestLoggerMiddleware);
 
   // API routes
@@ -43,7 +57,7 @@ export function createApp(): Application {
   // Global error handler (must be last)
   app.use(errorHandlerMiddleware);
 
-  logger.info('Express application configured');
+  logger.info('Express application configured with enhanced security');
 
   return app;
 }

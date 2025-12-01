@@ -85,7 +85,8 @@ describe('Application - Integration Tests', () => {
 
       // Helmet adds various security headers
       expect(response.headers['x-content-type-options']).toBe('nosniff');
-      expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+      // P-B-2 enhanced security: DENY is more restrictive than SAMEORIGIN
+      expect(response.headers['x-frame-options']).toBe('DENY');
     });
   });
 });
