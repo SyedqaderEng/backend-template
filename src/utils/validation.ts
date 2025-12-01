@@ -1,4 +1,4 @@
-import { z, ZodSchema, ZodError } from 'zod';
+import { z, ZodSchema } from 'zod';
 import { ApiError } from '../middleware/errorHandler.middleware';
 
 /**
@@ -126,9 +126,9 @@ export function validateBody<T>(schema: ZodSchema<T>) {
  * Create a validation middleware for query parameters
  */
 export function validateQuery<T>(schema: ZodSchema<T>) {
-  return (req: { query: unknown }, _res: unknown, next: (error?: unknown) => void): void => {
+  return (req: { query: unknown } & Record<string, unknown>, _res: unknown, next: (error?: unknown) => void): void => {
     try {
-      (req as { validatedQuery: T }).validatedQuery = validateOrThrow(schema, req.query);
+      req.validatedQuery = validateOrThrow(schema, req.query);
       next();
     } catch (error) {
       next(error);
@@ -140,9 +140,9 @@ export function validateQuery<T>(schema: ZodSchema<T>) {
  * Create a validation middleware for path parameters
  */
 export function validateParams<T>(schema: ZodSchema<T>) {
-  return (req: { params: unknown }, _res: unknown, next: (error?: unknown) => void): void => {
+  return (req: { params: unknown } & Record<string, unknown>, _res: unknown, next: (error?: unknown) => void): void => {
     try {
-      (req as { validatedParams: T }).validatedParams = validateOrThrow(schema, req.params);
+      req.validatedParams = validateOrThrow(schema, req.params);
       next();
     } catch (error) {
       next(error);
