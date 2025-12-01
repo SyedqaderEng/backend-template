@@ -177,9 +177,140 @@ Authorization: Bearer <your-jwt-token>
           allowedFileTypes: {
             type: 'array',
             items: { type: 'string' },
+            example: ['image/jpeg', 'image/png', 'application/pdf'],
           },
-          maxFileSize: { type: 'number' },
-          maxFileSizeMB: { type: 'number' },
+          maxFileSize: {
+            type: 'number',
+            description: 'Maximum file size in bytes',
+            example: 10485760,
+          },
+          maxFileSizeMB: {
+            type: 'number',
+            description: 'Maximum file size in megabytes',
+            example: 10,
+          },
+        },
+      },
+      PresignedUrlRequest: {
+        type: 'object',
+        required: ['file_name', 'file_type', 'file_size'],
+        properties: {
+          file_name: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 255,
+            description: 'Name of the file to upload',
+            example: 'document.pdf',
+          },
+          file_type: {
+            type: 'string',
+            description: 'MIME type of the file',
+            example: 'application/pdf',
+          },
+          file_size: {
+            type: 'number',
+            description: 'Size of the file in bytes (max 10MB)',
+            example: 102400,
+          },
+        },
+      },
+      CheckoutSessionRequest: {
+        type: 'object',
+        required: ['plan_id'],
+        properties: {
+          plan_id: {
+            type: 'string',
+            enum: ['basic', 'pro', 'enterprise'],
+            description: 'The subscription plan to checkout',
+            example: 'pro',
+          },
+          success_url: {
+            type: 'string',
+            format: 'uri',
+            description: 'URL to redirect after successful checkout',
+          },
+          cancel_url: {
+            type: 'string',
+            format: 'uri',
+            description: 'URL to redirect if checkout is cancelled',
+          },
+        },
+      },
+      WebhookEvent: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Unique event identifier',
+            example: 'evt_1OxYz2ABC123def456',
+          },
+          type: {
+            type: 'string',
+            description: 'Event type',
+            example: 'checkout.session.completed',
+          },
+          created: {
+            type: 'integer',
+            description: 'Unix timestamp of event creation',
+            example: 1704067200,
+          },
+          data: {
+            type: 'object',
+            description: 'Event data containing the relevant object',
+          },
+        },
+      },
+      WebhookResponse: {
+        type: 'object',
+        properties: {
+          received: { type: 'boolean', example: true },
+          eventType: {
+            type: 'string',
+            example: 'checkout.session.completed',
+          },
+          message: {
+            type: 'string',
+            example: 'Subscription created successfully',
+          },
+        },
+      },
+      RateLimitError: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean', example: false },
+          message: {
+            type: 'string',
+            example: 'Too many requests. Please try again later.',
+          },
+          retryAfter: {
+            type: 'number',
+            description: 'Seconds until rate limit resets',
+            example: 60,
+          },
+        },
+      },
+      ProfileUpdateRequest: {
+        type: 'object',
+        properties: {
+          first_name: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 100,
+            example: 'John',
+          },
+          last_name: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 100,
+            example: 'Doe',
+          },
+          avatar_url: {
+            type: 'string',
+            format: 'uri',
+            maxLength: 500,
+            nullable: true,
+            example: 'https://example.com/avatar.jpg',
+          },
         },
       },
     },
@@ -241,6 +372,33 @@ Authorization: Bearer <your-jwt-token>
             example: {
               success: false,
               message: 'Service is not configured',
+            },
+          },
+        },
+      },
+      TooManyRequests: {
+        description: 'Rate limit exceeded',
+        headers: {
+          'Retry-After': {
+            description: 'Seconds until rate limit resets',
+            schema: { type: 'integer' },
+          },
+          'X-RateLimit-Limit': {
+            description: 'Maximum requests allowed in window',
+            schema: { type: 'integer' },
+          },
+          'X-RateLimit-Remaining': {
+            description: 'Remaining requests in current window',
+            schema: { type: 'integer' },
+          },
+        },
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/RateLimitError' },
+            example: {
+              success: false,
+              message: 'Too many requests. Please try again later.',
+              retryAfter: 60,
             },
           },
         },
