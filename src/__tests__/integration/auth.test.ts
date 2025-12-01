@@ -76,7 +76,7 @@ describe('Auth Middleware - Integration Tests', () => {
         .get('/api/test/protected')
         .expect(401);
 
-      expect(response.body.status).toBe(401);
+      expect(response.body.success).toBe(false);
       expect(response.body.message).toBe('Authorization token required');
     });
 
@@ -86,7 +86,7 @@ describe('Auth Middleware - Integration Tests', () => {
         .set('Authorization', 'InvalidFormat')
         .expect(401);
 
-      expect(response.body.status).toBe(401);
+      expect(response.body.success).toBe(false);
     });
 
     it('should return 401 when using wrong auth scheme', async () => {
@@ -95,7 +95,7 @@ describe('Auth Middleware - Integration Tests', () => {
         .set('Authorization', 'Basic dGVzdDp0ZXN0')
         .expect(401);
 
-      expect(response.body.status).toBe(401);
+      expect(response.body.success).toBe(false);
     });
 
     it('should authenticate with valid Bearer token in test mode', async () => {
@@ -140,7 +140,7 @@ describe('Auth Middleware - Integration Tests', () => {
         .set('Authorization', 'Bearer test-token-123')
         .expect(403);
 
-      expect(response.body.status).toBe(403);
+      expect(response.body.success).toBe(false);
       expect(response.body.message).toBe('Insufficient permissions');
     });
   });

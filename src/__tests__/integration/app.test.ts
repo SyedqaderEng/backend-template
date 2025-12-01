@@ -24,7 +24,7 @@ describe('Application - Integration Tests', () => {
 
       // Should not return a parsing error
       expect(response.status).toBe(404);
-      expect(response.body).toHaveProperty('status', 404);
+      expect(response.body).toHaveProperty('success', false);
     });
   });
 
@@ -35,7 +35,7 @@ describe('Application - Integration Tests', () => {
         .expect('Content-Type', /json/)
         .expect(404);
 
-      expect(response.body).toHaveProperty('status', 404);
+      expect(response.body).toHaveProperty('success', false);
       expect(response.body).toHaveProperty('message');
       expect(response.body.message).toContain('Route not found');
     });

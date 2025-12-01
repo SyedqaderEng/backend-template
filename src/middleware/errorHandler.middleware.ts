@@ -19,12 +19,13 @@ export class ApiError extends Error {
 
 /**
  * Standard error response format
+ * Matches the success response pattern: { success: boolean, message: string, ... }
  */
 interface ErrorResponse {
-  status: number;
+  success: false;
   message: string;
   requestId?: string;
-  details?: unknown;
+  errors?: Array<{ field: string; message: string }>;
 }
 
 /**
@@ -50,11 +51,11 @@ export function errorHandlerMiddleware(
   // Handle Zod validation errors
   if (err instanceof ZodError) {
     const response: ErrorResponse = {
-      status: 400,
-      message: 'Validation error',
+      success: false,
+      message: 'Validation failed',
       requestId,
-      details: err.errors.map((e) => ({
-        path: e.path.join('.'),
+      errors: err.errors.map((e) => ({
+        field: e.path.join('.'),
         message: e.message,
       })),
     };
@@ -65,10 +66,12 @@ export function errorHandlerMiddleware(
   // Handle custom API errors
   if (err instanceof ApiError) {
     const response: ErrorResponse = {
-      status: err.statusCode,
+      success: false,
       message: err.message,
       requestId,
-      details: err.details,
+      errors: Array.isArray(err.details)
+        ? (err.details as Array<{ field: string; message: string }>)
+        : undefined,
     };
     res.status(err.statusCode).json(response);
     return;
@@ -76,7 +79,7 @@ export function errorHandlerMiddleware(
 
   // Handle unknown errors (500)
   const response: ErrorResponse = {
-    status: 500,
+    success: false,
     message: process.env.NODE_ENV === 'production'
       ? 'Internal server error'
       : err.message,
@@ -95,7 +98,7 @@ export function notFoundHandler(
   _next: NextFunction
 ): void {
   const response: ErrorResponse = {
-    status: 404,
+    success: false,
     message: `Route not found: ${req.method} ${req.url}`,
     requestId: req.requestId,
   };

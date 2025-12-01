@@ -63,10 +63,30 @@ describe('Error Handler Middleware', () => {
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
       expect(mockRes.json).toHaveBeenCalledWith({
-        status: 400,
+        success: false,
         message: 'Bad Request',
         requestId: 'test-request-123',
-        details: undefined,
+        errors: undefined,
+      });
+    });
+
+    it('should handle ApiError with validation errors', () => {
+      const validationErrors = [{ field: 'email', message: 'Invalid email' }];
+      const error = new ApiError(400, 'Validation failed', validationErrors);
+
+      errorHandlerMiddleware(
+        error,
+        mockReq as Request,
+        mockRes as Response,
+        mockNext
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        message: 'Validation failed',
+        requestId: 'test-request-123',
+        errors: validationErrors,
       });
     });
 
@@ -91,8 +111,8 @@ describe('Error Handler Middleware', () => {
         expect(mockRes.status).toHaveBeenCalledWith(400);
         expect(mockRes.json).toHaveBeenCalledWith(
           expect.objectContaining({
-            status: 400,
-            message: 'Validation error',
+            success: false,
+            message: 'Validation failed',
             requestId: 'test-request-123',
           })
         );
@@ -112,7 +132,7 @@ describe('Error Handler Middleware', () => {
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: 500,
+          success: false,
           requestId: 'test-request-123',
         })
       );
@@ -129,7 +149,7 @@ describe('Error Handler Middleware', () => {
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
       expect(mockRes.json).toHaveBeenCalledWith({
-        status: 404,
+        success: false,
         message: 'Route not found: GET /api/test',
         requestId: 'test-request-123',
       });

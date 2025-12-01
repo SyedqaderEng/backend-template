@@ -76,7 +76,7 @@ describe('Health Routes - Regression Tests', () => {
         .get('/api/health/undefined-endpoint')
         .expect(404);
 
-      expect(response.body.status).toBe(404);
+      expect(response.body.success).toBe(false);
     });
   });
 
@@ -116,7 +116,7 @@ describe('Health Routes - Regression Tests', () => {
         .expect(404);
 
       // Verify error response structure
-      expect(response.body).toHaveProperty('status', 404);
+      expect(response.body).toHaveProperty('success', false);
       expect(response.body).toHaveProperty('message');
       expect(response.body).toHaveProperty('requestId');
       expect(typeof response.body.message).toBe('string');
