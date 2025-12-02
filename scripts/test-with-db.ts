@@ -186,7 +186,8 @@ async function runTests() {
       subject: 'Test Ticket',
       description: 'This is a test ticket',
       category: 'technical',
-      priority: 'medium'
+      priority: 'medium',
+      status: 'open'
     });
     ticketId = ticket.id;
   });
@@ -197,7 +198,7 @@ async function runTests() {
   });
 
   await test('Add ticket message', async () => {
-    await supportRepository.addMessage({
+    await supportRepository.createMessage({
       ticket_id: ticketId,
       user_id: TEST_USER_ID,
       message: 'Test message',
@@ -206,22 +207,24 @@ async function runTests() {
   });
 
   await test('Get ticket messages', async () => {
-    const messages = await supportRepository.getMessages(ticketId);
+    const messages = await supportRepository.getTicketMessages(ticketId);
     if (messages.length === 0) throw new Error('No messages found');
   });
 
   await test('Update ticket status', async () => {
-    const updated = await supportRepository.updateTicketStatus(ticketId, 'in_progress');
+    const updated = await supportRepository.updateTicket(ticketId, { status: 'in_progress' });
     if (updated.status !== 'in_progress') throw new Error('Status not updated');
   });
 
   await test('Report error', async () => {
-    await supportRepository.reportError({
+    await supportRepository.createErrorReport({
       user_id: TEST_USER_ID,
       error_type: 'TestError',
       message: 'Test error message',
       stack: 'Test stack trace',
-      context: { page: 'test' }
+      context: { page: 'test' },
+      url: null,
+      user_agent: null
     });
   });
 
@@ -275,13 +278,15 @@ async function runTests() {
       user_id: TEST_USER_ID,
       action: 'test.action',
       resource: 'test',
-      details: { test: true }
+      details: { test: true },
+      ip_address: '127.0.0.1',
+      user_agent: 'test-script'
     });
   });
 
   await test('Find logs by user', async () => {
-    const logs = await logsRepository.findByUserId(TEST_USER_ID);
-    if (logs.length === 0) throw new Error('No logs found');
+    const result = await logsRepository.findByUserId(TEST_USER_ID);
+    if (result.logs.length === 0) throw new Error('No logs found');
   });
 
   // ============================================
@@ -290,7 +295,10 @@ async function runTests() {
   console.log('\n--- Settings Repository ---');
 
   await test('Create/Update settings', async () => {
-    const settings = await settingsRepository.upsert(TEST_USER_ID, {
+    // First create default settings
+    await settingsRepository.getOrCreate(TEST_USER_ID);
+    // Then update with desired values
+    const settings = await settingsRepository.update(TEST_USER_ID, {
       theme: 'dark',
       language: 'en'
     });
@@ -321,6 +329,7 @@ async function runTests() {
       user_id: TEST_USER_ID,
       request_type: 'export',
       status: 'pending',
+      reason: 'Testing data export',
       scheduled_at: new Date().toISOString()
     });
   });
