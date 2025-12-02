@@ -87,6 +87,8 @@ function createLimiter(config: typeof rateLimitConfig.general, name: string) {
       }
       return false;
     },
+    // Disable validation since we handle IPv6 normalization ourselves
+    validate: false,
   };
 
   logger.debug({ name, ...options }, 'Creating rate limiter');
