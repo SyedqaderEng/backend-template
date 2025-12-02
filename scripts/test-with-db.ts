@@ -54,7 +54,7 @@ async function runTests() {
   console.log('--- Connection Test ---');
   await test('Supabase connection', async () => {
     const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from('profiles').select('count').limit(1);
+    const { error } = await supabase.from('teams').select('count').limit(1);
     if (error && !error.message.includes('does not exist')) throw error;
   });
 
