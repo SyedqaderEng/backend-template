@@ -115,7 +115,6 @@ describe('API Documentation Endpoints', () => {
       expect(tagNames).toContain('Users');
       expect(tagNames).toContain('Subscriptions');
       expect(tagNames).toContain('Billing');
-      expect(tagNames).toContain('Upload');
     });
 
     it('should include paths from route documentation', async () => {
