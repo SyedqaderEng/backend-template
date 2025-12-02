@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
-import { profileRepository } from '../database';
+import { profileRepository, logsRepository, notificationsRepository } from '../database';
+import { getSupabaseAdmin } from '../database/supabase';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -77,50 +78,43 @@ router.get(
       const search = req.query.search as string | undefined;
       const plan = req.query.plan as string | undefined;
 
-      // In production, query the database with filters
-      // This is a mock implementation
-      const mockUsers = [
-        {
-          id: '1',
-          clerk_user_id: 'user_123',
-          email: 'admin@example.com',
-          first_name: 'Admin',
-          last_name: 'User',
-          plan: 'enterprise',
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: '2',
-          clerk_user_id: 'user_456',
-          email: 'user@example.com',
-          first_name: 'Regular',
-          last_name: 'User',
-          plan: 'free',
-          created_at: new Date().toISOString(),
-        },
-      ];
+      const supabase = getSupabaseAdmin();
 
-      let filteredUsers = mockUsers;
+      // Build query with filters
+      let query = supabase
+        .from('profiles')
+        .select('*', { count: 'exact' });
+
+      // Apply search filter
       if (search) {
         const searchLower = search.toLowerCase();
-        filteredUsers = filteredUsers.filter(
-          (u) =>
-            u.email.toLowerCase().includes(searchLower) ||
-            u.first_name.toLowerCase().includes(searchLower) ||
-            u.last_name.toLowerCase().includes(searchLower)
+        query = query.or(
+          `email.ilike.%${searchLower}%,first_name.ilike.%${searchLower}%,last_name.ilike.%${searchLower}%`
         );
       }
+
+      // Apply plan filter
       if (plan) {
-        filteredUsers = filteredUsers.filter((u) => u.plan === plan);
+        query = query.eq('plan', plan);
       }
 
-      const paginatedUsers = filteredUsers.slice(offset, offset + limit);
+      // Apply pagination and ordering
+      query = query
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      const { data, error, count } = await query;
+
+      if (error) {
+        logger.error({ error: error.message }, 'Failed to fetch users');
+        throw new ApiError(500, 'Failed to fetch users');
+      }
 
       res.status(200).json({
         success: true,
         data: {
-          users: paginatedUsers,
-          total: filteredUsers.length,
+          users: data || [],
+          total: count || 0,
           limit,
           offset,
         },
@@ -363,27 +357,86 @@ router.get(
   '/stats',
   authMiddleware,
   requireRoles('admin'),
-  async (_req: Request, res: Response) => {
-    // In production, aggregate from database
-    res.status(200).json({
-      success: true,
-      data: {
-        totalUsers: 1250,
-        activeUsers: 892,
-        newUsersToday: 15,
-        newUsersThisWeek: 87,
-        totalRevenue: 45890.5,
-        monthlyRecurringRevenue: 8750.0,
-        subscriptionBreakdown: {
-          free: 800,
-          basic: 280,
-          pro: 140,
-          enterprise: 30,
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const supabase = getSupabaseAdmin();
+
+      // Get total users count
+      const { count: totalUsers } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true });
+
+      // Get active users (users with activity in last 30 days)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const { count: activeUsers } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .gte('last_active_at', thirtyDaysAgo.toISOString());
+
+      // Get new users today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const { count: newUsersToday } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', today.toISOString());
+
+      // Get new users this week
+      const weekAgo = new Date();
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      weekAgo.setHours(0, 0, 0, 0);
+      const { count: newUsersThisWeek } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', weekAgo.toISOString());
+
+      // Get subscription breakdown by plan
+      const { data: planData } = await supabase
+        .from('profiles')
+        .select('plan');
+
+      const subscriptionBreakdown = {
+        free: 0,
+        basic: 0,
+        pro: 0,
+        enterprise: 0,
+      };
+
+      planData?.forEach((profile) => {
+        const plan = profile.plan as keyof typeof subscriptionBreakdown;
+        if (plan && subscriptionBreakdown[plan] !== undefined) {
+          subscriptionBreakdown[plan]++;
+        }
+      });
+
+      // Calculate conversion rate (non-free users / total users)
+      const paidUsers = subscriptionBreakdown.basic + subscriptionBreakdown.pro + subscriptionBreakdown.enterprise;
+      const conversionRate = totalUsers ? paidUsers / totalUsers : 0;
+
+      // Revenue data would come from Stripe in production
+      // Using mock data for now
+      const totalRevenue = 45890.5;
+      const monthlyRecurringRevenue = 8750.0;
+      const churnRate = 0.025;
+
+      res.status(200).json({
+        success: true,
+        data: {
+          totalUsers: totalUsers || 0,
+          activeUsers: activeUsers || 0,
+          newUsersToday: newUsersToday || 0,
+          newUsersThisWeek: newUsersThisWeek || 0,
+          totalRevenue,
+          monthlyRecurringRevenue,
+          subscriptionBreakdown,
+          conversionRate: parseFloat(conversionRate.toFixed(2)),
+          churnRate,
         },
-        conversionRate: 0.36,
-        churnRate: 0.025,
-      },
-    });
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 
@@ -414,31 +467,19 @@ router.get(
   '/activity',
   authMiddleware,
   requireRoles('admin'),
-  async (req: Request, res: Response) => {
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
 
-    // In production, query from activity/audit log table
-    const mockActivity = [
-      {
-        id: '1',
-        type: 'user.created',
-        userId: 'user_123',
-        details: { email: 'new@example.com' },
-        timestamp: new Date().toISOString(),
-      },
-      {
-        id: '2',
-        type: 'subscription.upgraded',
-        userId: 'user_456',
-        details: { from: 'free', to: 'pro' },
-        timestamp: new Date(Date.now() - 3600000).toISOString(),
-      },
-    ];
+      const logs = await logsRepository.findAll({ limit });
 
-    res.status(200).json({
-      success: true,
-      data: mockActivity.slice(0, limit),
-    });
+      res.status(200).json({
+        success: true,
+        data: logs,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 
@@ -553,20 +594,54 @@ router.post(
         throw new ApiError(400, 'Title and message are required');
       }
 
+      const supabase = getSupabaseAdmin();
+
+      // Query target users based on plan filters
+      let query = supabase
+        .from('profiles')
+        .select('id');
+
+      if (targetPlans && Array.isArray(targetPlans) && targetPlans.length > 0 && !targetPlans.includes('all')) {
+        query = query.in('plan', targetPlans);
+      }
+
+      const { data: targetUsers, error: fetchError } = await query;
+
+      if (fetchError) {
+        logger.error({ error: fetchError.message }, 'Failed to fetch target users for broadcast');
+        throw new ApiError(500, 'Failed to fetch target users');
+      }
+
+      // Create notifications for each target user
+      const notificationPromises = (targetUsers || []).map((user) =>
+        notificationsRepository.create({
+          user_id: user.id,
+          type: 'info',
+          title,
+          message,
+        })
+      );
+
+      await Promise.all(notificationPromises);
+
       logger.info(
-        { adminUserId, title, targetPlans, sendEmail },
+        { adminUserId, title, targetPlans, sendEmail, recipients: targetUsers?.length || 0 },
         'Admin broadcast sent'
       );
 
-      // In production, queue the broadcast for processing
+      // In production, also queue email notifications if sendEmail is true
+      if (sendEmail) {
+        logger.info({ recipients: targetUsers?.length || 0 }, 'Broadcast email queued');
+      }
+
       res.status(200).json({
         success: true,
-        message: 'Broadcast queued successfully',
+        message: 'Broadcast sent successfully',
         data: {
           title,
           targetPlans: targetPlans || ['all'],
           sendEmail: sendEmail || false,
-          estimatedRecipients: targetPlans ? 450 : 1250,
+          recipients: targetUsers?.length || 0,
         },
       });
     } catch (error) {

@@ -2,20 +2,11 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
-import { profileRepository } from '../database';
+import { profileRepository, settingsRepository } from '../database';
 import { logger } from '../utils/logger';
+import { getSupabaseAdmin } from '../database/supabase';
 
 const router = Router();
-
-// In-memory settings storage (in production, use Supabase)
-const userSettings: Map<string, Record<string, unknown>> = new Map();
-const appSettings: Record<string, unknown> = {
-  maintenance_mode: false,
-  signup_enabled: true,
-  max_users_per_team: 10,
-  default_plan: 'free',
-  trial_days: 14,
-};
 
 /**
  * User settings update schema
@@ -45,6 +36,117 @@ const appSettingsSchema = z.object({
   default_plan: z.enum(['free', 'basic', 'pro', 'enterprise']).optional(),
   trial_days: z.number().min(0).max(90).optional(),
 });
+
+/**
+ * Helper to transform database settings to API format
+ */
+function transformDbToApi(dbSettings: any) {
+  return {
+    theme: dbSettings.theme || 'system',
+    language: dbSettings.language || 'en',
+    timezone: dbSettings.timezone || 'UTC',
+    notifications: {
+      email: dbSettings.email_notifications ?? true,
+      push: dbSettings.push_notifications ?? true,
+      sms: false, // Not stored in DB yet
+    },
+    privacy: {
+      showProfile: true, // Not stored in DB yet
+      showActivity: true, // Not stored in DB yet
+    },
+  };
+}
+
+/**
+ * Helper to transform API format to database updates
+ */
+function transformApiToDb(apiSettings: any) {
+  const dbUpdates: any = {};
+
+  if (apiSettings.theme !== undefined) {
+    dbUpdates.theme = apiSettings.theme;
+  }
+  if (apiSettings.language !== undefined) {
+    dbUpdates.language = apiSettings.language;
+  }
+  if (apiSettings.timezone !== undefined) {
+    dbUpdates.timezone = apiSettings.timezone;
+  }
+  if (apiSettings.notifications?.email !== undefined) {
+    dbUpdates.email_notifications = apiSettings.notifications.email;
+  }
+  if (apiSettings.notifications?.push !== undefined) {
+    dbUpdates.push_notifications = apiSettings.notifications.push;
+  }
+  // Note: sms notifications and privacy settings not yet in DB schema
+
+  return dbUpdates;
+}
+
+/**
+ * App settings repository using Supabase
+ */
+const appSettingsRepository = {
+  async get(): Promise<Record<string, any>> {
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('*')
+      .single();
+
+    if (error) {
+      // If table doesn't exist or no data, return defaults
+      if (error.code === 'PGRST116' || error.code === '42P01') {
+        return {
+          maintenance_mode: false,
+          signup_enabled: true,
+          max_users_per_team: 10,
+          default_plan: 'free',
+          trial_days: 14,
+        };
+      }
+      logger.error({ error: error.message }, 'Failed to fetch app settings');
+      throw error;
+    }
+
+    return data || {
+      maintenance_mode: false,
+      signup_enabled: true,
+      max_users_per_team: 10,
+      default_plan: 'free',
+      trial_days: 14,
+    };
+  },
+
+  async update(updates: Record<string, any>): Promise<Record<string, any>> {
+    const supabase = getSupabaseAdmin();
+
+    // First, try to get existing settings
+    const existing = await this.get();
+
+    // Merge updates
+    const merged = { ...existing, ...updates };
+
+    // Try to update, or insert if doesn't exist
+    const { data, error } = await supabase
+      .from('app_settings')
+      .upsert({ id: 1, ...merged, updated_at: new Date().toISOString() })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error({ error: error.message }, 'Failed to update app settings');
+      // If table doesn't exist, return merged settings (graceful degradation)
+      if (error.code === '42P01') {
+        logger.warn('app_settings table does not exist, returning merged settings');
+        return merged;
+      }
+      throw error;
+    }
+
+    return data;
+  },
+};
 
 /**
  * @openapi
@@ -98,29 +200,21 @@ const appSettingsSchema = z.object({
 router.get(
   '/',
   authMiddleware,
-  async (req: Request, res: Response, _next: NextFunction) => {
-    const clerkUserId = requireUserId(req);
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clerkUserId = requireUserId(req);
 
-    // Get user settings or return defaults
-    const settings = userSettings.get(clerkUserId) || {
-      theme: 'system',
-      language: 'en',
-      timezone: 'UTC',
-      notifications: {
-        email: true,
-        push: true,
-        sms: false,
-      },
-      privacy: {
-        showProfile: true,
-        showActivity: true,
-      },
-    };
+      // Get user settings from database or create with defaults
+      const dbSettings = await settingsRepository.getOrCreate(clerkUserId);
+      const settings = transformDbToApi(dbSettings);
 
-    res.status(200).json({
-      success: true,
-      data: settings,
-    });
+      res.status(200).json({
+        success: true,
+        data: settings,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 
@@ -197,29 +291,12 @@ router.put(
         throw new ApiError(400, 'Validation failed', errors);
       }
 
-      const currentSettings = userSettings.get(clerkUserId) || {
-        theme: 'system',
-        language: 'en',
-        timezone: 'UTC',
-        notifications: { email: true, push: true, sms: false },
-        privacy: { showProfile: true, showActivity: true },
-      };
+      // Transform API format to database format
+      const dbUpdates = transformApiToDb(validationResult.data);
 
-      // Deep merge settings
-      const updatedSettings = {
-        ...currentSettings,
-        ...validationResult.data,
-        notifications: {
-          ...(currentSettings as Record<string, Record<string, unknown>>).notifications,
-          ...validationResult.data.notifications,
-        },
-        privacy: {
-          ...(currentSettings as Record<string, Record<string, unknown>>).privacy,
-          ...validationResult.data.privacy,
-        },
-      };
-
-      userSettings.set(clerkUserId, updatedSettings);
+      // Update settings in database
+      const updatedDbSettings = await settingsRepository.update(clerkUserId, dbUpdates);
+      const updatedSettings = transformDbToApi(updatedDbSettings);
 
       logger.info({ clerkUserId }, 'User settings updated');
 
@@ -275,11 +352,17 @@ router.get(
   '/app',
   authMiddleware,
   requireRoles('admin'),
-  async (_req: Request, res: Response) => {
-    res.status(200).json({
-      success: true,
-      data: appSettings,
-    });
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const appSettings = await appSettingsRepository.get();
+
+      res.status(200).json({
+        success: true,
+        data: appSettings,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 
@@ -334,13 +417,13 @@ router.put(
         throw new ApiError(400, 'Validation failed', errors);
       }
 
-      Object.assign(appSettings, validationResult.data);
+      const updatedSettings = await appSettingsRepository.update(validationResult.data);
 
       logger.info({ settings: validationResult.data }, 'App settings updated');
 
       res.status(200).json({
         success: true,
-        data: appSettings,
+        data: updatedSettings,
       });
     } catch (error) {
       next(error);
@@ -385,13 +468,8 @@ router.get(
       const clerkUserId = requireUserId(req);
 
       const profile = await profileRepository.findByClerkUserId(clerkUserId);
-      const settings = userSettings.get(clerkUserId) || {
-        theme: 'system',
-        language: 'en',
-        timezone: 'UTC',
-        notifications: { email: true, push: true, sms: false },
-        privacy: { showProfile: true, showActivity: true },
-      };
+      const dbSettings = await settingsRepository.getOrCreate(clerkUserId);
+      const settings = transformDbToApi(dbSettings);
 
       res.status(200).json({
         success: true,

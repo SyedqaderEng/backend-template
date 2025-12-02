@@ -11,6 +11,7 @@ import {
   getPlanLimits,
 } from '../services';
 import { logger } from '../utils/logger';
+import { subscriptionsRepository } from '../database';
 
 const router = Router();
 
@@ -535,6 +536,16 @@ router.post('/upgrade', authMiddleware, async (req: Request, res: Response, next
 
     logger.info({ clerkUserId, fromPlan: subscription.plan.id, toPlan: planId, prorate }, 'Subscription upgrade requested');
 
+    // Record the upgrade action in database
+    await subscriptionsRepository.recordAction({
+      user_id: clerkUserId,
+      action: 'upgrade',
+      from_plan: subscription.plan.id,
+      to_plan: planId,
+      stripe_subscription_id: null,
+      metadata: { prorate },
+    });
+
     // In production, handle via Stripe
     res.status(200).json({
       success: true,
@@ -596,13 +607,25 @@ router.post('/downgrade', authMiddleware, async (req: Request, res: Response, ne
 
     logger.info({ clerkUserId, fromPlan: subscription.plan.id, toPlan: planId }, 'Subscription downgrade scheduled');
 
+    const effectiveDate = subscription.currentPeriodEnd?.toISOString() || new Date(Date.now() + 30 * 24 * 3600000).toISOString();
+
+    // Record the downgrade action in database
+    await subscriptionsRepository.recordAction({
+      user_id: clerkUserId,
+      action: 'downgrade_scheduled',
+      from_plan: subscription.plan.id,
+      to_plan: planId,
+      stripe_subscription_id: null,
+      metadata: { effectiveDate },
+    });
+
     res.status(200).json({
       success: true,
       message: 'Downgrade scheduled for end of billing period',
       data: {
         currentPlan: subscription.plan.id,
         scheduledPlan: planId,
-        effectiveDate: subscription.currentPeriodEnd?.toISOString() || new Date(Date.now() + 30 * 24 * 3600000).toISOString(),
+        effectiveDate,
       },
     });
   } catch (error) {
@@ -649,12 +672,24 @@ router.post('/cancel', authMiddleware, async (req: Request, res: Response, next:
 
     logger.info({ clerkUserId, reason, immediately }, 'Subscription cancellation requested');
 
+    const effectiveDate = immediately ? new Date().toISOString() : subscription.currentPeriodEnd?.toISOString();
+
+    // Record the cancellation action in database
+    await subscriptionsRepository.recordAction({
+      user_id: clerkUserId,
+      action: immediately ? 'cancel_immediate' : 'cancel_scheduled',
+      from_plan: subscription.plan.id,
+      to_plan: 'free',
+      stripe_subscription_id: null,
+      metadata: { reason, effectiveDate },
+    });
+
     res.status(200).json({
       success: true,
       message: immediately ? 'Subscription cancelled immediately' : 'Subscription will be cancelled at end of billing period',
       data: {
         cancelledAt: new Date().toISOString(),
-        effectiveDate: immediately ? new Date().toISOString() : subscription.currentPeriodEnd?.toISOString(),
+        effectiveDate,
         reactivationDeadline: subscription.currentPeriodEnd?.toISOString(),
       },
     });
@@ -679,8 +714,19 @@ router.post('/cancel', authMiddleware, async (req: Request, res: Response, next:
 router.post('/reactivate', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const clerkUserId = requireUserId(req);
+    const subscription = await getCurrentSubscription(clerkUserId);
 
     logger.info({ clerkUserId }, 'Subscription reactivation requested');
+
+    // Record the reactivation action in database
+    await subscriptionsRepository.recordAction({
+      user_id: clerkUserId,
+      action: 'reactivate',
+      from_plan: subscription.plan.id,
+      to_plan: subscription.plan.id,
+      stripe_subscription_id: null,
+      metadata: {},
+    });
 
     res.status(200).json({
       success: true,
@@ -735,10 +781,21 @@ router.post('/trial', authMiddleware, async (req: Request, res: Response, next: 
       throw new ApiError(400, 'Free trial has already been used');
     }
 
+    const subscription = await getCurrentSubscription(clerkUserId);
     const trialDays = 14;
     const trialEndDate = new Date(Date.now() + trialDays * 24 * 3600000);
 
     logger.info({ clerkUserId, planId, trialDays }, 'Free trial started');
+
+    // Record the trial start action in database
+    await subscriptionsRepository.recordAction({
+      user_id: clerkUserId,
+      action: 'trial_started',
+      from_plan: subscription.plan.id,
+      to_plan: planId,
+      stripe_subscription_id: null,
+      metadata: { trialDays, trialEndDate: trialEndDate.toISOString() },
+    });
 
     res.status(200).json({
       success: true,
@@ -821,27 +878,28 @@ router.post('/trial/extend', authMiddleware, async (req: Request, res: Response,
  *       200:
  *         description: Subscription history
  */
-router.get('/history', authMiddleware, async (_req: Request, res: Response) => {
-  // Mock history - in production, fetch from database
-  res.status(200).json({
-    success: true,
-    data: [
-      {
-        id: '1',
-        type: 'upgrade',
-        fromPlan: 'free',
-        toPlan: 'basic',
-        date: new Date(Date.now() - 60 * 24 * 3600000).toISOString(),
-      },
-      {
-        id: '2',
-        type: 'upgrade',
-        fromPlan: 'basic',
-        toPlan: 'pro',
-        date: new Date(Date.now() - 30 * 24 * 3600000).toISOString(),
-      },
-    ],
-  });
+router.get('/history', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+
+    // Fetch history from database
+    const history = await subscriptionsRepository.getHistory(clerkUserId, limit);
+
+    res.status(200).json({
+      success: true,
+      data: history.map((record) => ({
+        id: record.id,
+        type: record.action,
+        fromPlan: record.from_plan,
+        toPlan: record.to_plan,
+        date: record.created_at,
+        metadata: record.metadata,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 /**
@@ -932,16 +990,15 @@ router.post('/coupon', authMiddleware, async (req: Request, res: Response, next:
       throw new ApiError(400, 'Coupon code is required');
     }
 
-    // Mock coupon validation - in production, validate via Stripe
-    const validCoupons: Record<string, { discount: number; type: 'percent' | 'amount' }> = {
-      'SAVE20': { discount: 20, type: 'percent' },
-      'WELCOME10': { discount: 10, type: 'percent' },
-    };
+    // Validate coupon using database
+    const validation = await subscriptionsRepository.validateCoupon(code);
 
-    const coupon = validCoupons[code.toUpperCase()];
-    if (!coupon) {
-      throw new ApiError(400, 'Invalid or expired coupon code');
+    if (!validation.valid || !validation.coupon) {
+      throw new ApiError(400, validation.reason || 'Invalid or expired coupon code');
     }
+
+    // Increment coupon usage
+    await subscriptionsRepository.useCoupon(validation.coupon.id);
 
     logger.info({ clerkUserId, code }, 'Coupon applied');
 
@@ -949,9 +1006,9 @@ router.post('/coupon', authMiddleware, async (req: Request, res: Response, next:
       success: true,
       message: 'Coupon applied successfully',
       data: {
-        code: code.toUpperCase(),
-        discount: coupon.discount,
-        discountType: coupon.type,
+        code: validation.coupon.code,
+        discount: validation.coupon.discount_value,
+        discountType: validation.coupon.discount_type === 'percentage' ? 'percent' : 'amount',
       },
     });
   } catch (error) {
@@ -981,26 +1038,40 @@ router.post('/coupon', authMiddleware, async (req: Request, res: Response, next:
  *       200:
  *         description: Coupon validation result
  */
-router.post('/coupon/validate', async (req: Request, res: Response) => {
-  const { code } = req.body;
+router.post('/coupon/validate', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { code } = req.body;
 
-  const validCoupons: Record<string, { discount: number; type: 'percent' | 'amount'; description: string }> = {
-    'SAVE20': { discount: 20, type: 'percent', description: '20% off your subscription' },
-    'WELCOME10': { discount: 10, type: 'percent', description: '10% off for new customers' },
-  };
+    if (!code) {
+      res.status(200).json({
+        success: true,
+        data: {
+          valid: false,
+          code: null,
+          discount: null,
+          discountType: null,
+          description: null,
+        },
+      });
+      return;
+    }
 
-  const coupon = code ? validCoupons[code.toUpperCase()] : null;
+    // Validate coupon using database
+    const validation = await subscriptionsRepository.validateCoupon(code);
 
-  res.status(200).json({
-    success: true,
-    data: {
-      valid: !!coupon,
-      code: code?.toUpperCase(),
-      discount: coupon?.discount || null,
-      discountType: coupon?.type || null,
-      description: coupon?.description || null,
-    },
-  });
+    res.status(200).json({
+      success: true,
+      data: {
+        valid: validation.valid,
+        code: validation.coupon?.code || code.toUpperCase(),
+        discount: validation.coupon?.discount_value || null,
+        discountType: validation.coupon ? (validation.coupon.discount_type === 'percentage' ? 'percent' : 'amount') : null,
+        description: validation.valid ? null : validation.reason,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 export { router as subscriptionRouter };

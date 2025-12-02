@@ -17,7 +17,6 @@ A comprehensive backend API built with Express.js and TypeScript.
 - **User Management**: User profile CRUD operations
 - **Subscriptions**: Stripe-powered subscription management
 - **Billing**: Customer billing portal access
-- **File Uploads**: Secure file upload via UploadThing
 - **Email**: Transactional emails via Resend
 
 ## Authentication
@@ -168,49 +167,6 @@ Authorization: Bearer <your-jwt-token>
               prioritySupport: { type: 'boolean' },
               customIntegrations: { type: 'boolean' },
             },
-          },
-        },
-      },
-      UploadConfig: {
-        type: 'object',
-        properties: {
-          allowedFileTypes: {
-            type: 'array',
-            items: { type: 'string' },
-            example: ['image/jpeg', 'image/png', 'application/pdf'],
-          },
-          maxFileSize: {
-            type: 'number',
-            description: 'Maximum file size in bytes',
-            example: 10485760,
-          },
-          maxFileSizeMB: {
-            type: 'number',
-            description: 'Maximum file size in megabytes',
-            example: 10,
-          },
-        },
-      },
-      PresignedUrlRequest: {
-        type: 'object',
-        required: ['file_name', 'file_type', 'file_size'],
-        properties: {
-          file_name: {
-            type: 'string',
-            minLength: 1,
-            maxLength: 255,
-            description: 'Name of the file to upload',
-            example: 'document.pdf',
-          },
-          file_type: {
-            type: 'string',
-            description: 'MIME type of the file',
-            example: 'application/pdf',
-          },
-          file_size: {
-            type: 'number',
-            description: 'Size of the file in bytes (max 10MB)',
-            example: 102400,
           },
         },
       },
@@ -437,10 +393,6 @@ Authorization: Bearer <your-jwt-token>
     {
       name: 'Features',
       description: 'Feature flags and plan-based access control',
-    },
-    {
-      name: 'Upload',
-      description: 'File upload operations',
     },
     {
       name: 'Email',

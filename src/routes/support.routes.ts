@@ -3,49 +3,9 @@ import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
-import { randomUUID } from 'crypto';
+import { supportRepository } from '../database';
 
 const router = Router();
-
-// In-memory support ticket storage
-interface SupportTicket {
-  id: string;
-  userId: string;
-  subject: string;
-  description: string;
-  category: string;
-  priority: 'low' | 'medium' | 'high' | 'urgent';
-  status: 'open' | 'in_progress' | 'waiting_on_customer' | 'resolved' | 'closed';
-  assignedTo: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  resolvedAt: Date | null;
-}
-
-interface TicketMessage {
-  id: string;
-  ticketId: string;
-  userId: string;
-  message: string;
-  isStaff: boolean;
-  createdAt: Date;
-}
-
-interface ErrorReport {
-  id: string;
-  userId: string | null;
-  errorType: string;
-  message: string;
-  stack: string | null;
-  context: Record<string, unknown>;
-  url: string | null;
-  userAgent: string | null;
-  createdAt: Date;
-}
-
-const supportTickets: SupportTicket[] = [];
-const ticketMessages: TicketMessage[] = [];
-const errorReports: ErrorReport[] = [];
 
 const createTicketSchema = z.object({
   subject: z.string().min(5).max(200),
@@ -95,23 +55,17 @@ router.get('/tickets', authMiddleware, async (req: Request, res: Response) => {
   const status = req.query.status as string | undefined;
   const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
 
-  let tickets = supportTickets.filter((t) => t.userId === userId);
-  if (status) {
-    tickets = tickets.filter((t) => t.status === status);
-  }
+  const tickets = await supportRepository.findTicketsByUserId(userId, { status, limit });
 
-  const result = tickets
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .slice(0, limit)
-    .map((t) => ({
-      id: t.id,
-      subject: t.subject,
-      category: t.category,
-      priority: t.priority,
-      status: t.status,
-      createdAt: t.createdAt.toISOString(),
-      updatedAt: t.updatedAt.toISOString(),
-    }));
+  const result = tickets.map((t) => ({
+    id: t.id,
+    subject: t.subject,
+    category: t.category,
+    priority: t.priority,
+    status: t.status,
+    createdAt: t.created_at,
+    updatedAt: t.updated_at,
+  }));
 
   res.status(200).json({
     success: true,
@@ -172,21 +126,14 @@ router.post('/tickets', authMiddleware, async (req: Request, res: Response, next
 
     const { subject, description, category, priority } = validationResult.data;
 
-    const ticket: SupportTicket = {
-      id: randomUUID(),
-      userId,
+    const ticket = await supportRepository.createTicket({
+      user_id: userId,
       subject,
       description,
       category,
       priority,
       status: 'open',
-      assignedTo: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      resolvedAt: null,
-    };
-
-    supportTickets.push(ticket);
+    });
 
     logger.info({ userId, ticketId: ticket.id, category }, 'Support ticket created');
 
@@ -198,7 +145,7 @@ router.post('/tickets', authMiddleware, async (req: Request, res: Response, next
         category: ticket.category,
         priority: ticket.priority,
         status: ticket.status,
-        createdAt: ticket.createdAt.toISOString(),
+        createdAt: ticket.created_at,
       },
     });
   } catch (error) {
@@ -232,20 +179,12 @@ router.get('/tickets/:ticketId', authMiddleware, async (req: Request, res: Respo
     const userId = requireUserId(req);
     const { ticketId } = req.params;
 
-    const ticket = supportTickets.find((t) => t.id === ticketId && t.userId === userId);
-    if (!ticket) {
+    const ticket = await supportRepository.findTicketById(ticketId);
+    if (!ticket || ticket.user_id !== userId) {
       throw new ApiError(404, 'Ticket not found');
     }
 
-    const messages = ticketMessages
-      .filter((m) => m.ticketId === ticketId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .map((m) => ({
-        id: m.id,
-        message: m.message,
-        isStaff: m.isStaff,
-        createdAt: m.createdAt.toISOString(),
-      }));
+    const messages = await supportRepository.getTicketMessages(ticketId);
 
     res.status(200).json({
       success: true,
@@ -256,10 +195,15 @@ router.get('/tickets/:ticketId', authMiddleware, async (req: Request, res: Respo
         category: ticket.category,
         priority: ticket.priority,
         status: ticket.status,
-        createdAt: ticket.createdAt.toISOString(),
-        updatedAt: ticket.updatedAt.toISOString(),
-        resolvedAt: ticket.resolvedAt?.toISOString() || null,
-        messages,
+        createdAt: ticket.created_at,
+        updatedAt: ticket.updated_at,
+        resolvedAt: ticket.resolved_at,
+        messages: messages.map((m) => ({
+          id: m.id,
+          message: m.message,
+          isStaff: m.is_staff,
+          createdAt: m.created_at,
+        })),
       },
     });
   } catch (error) {
@@ -302,8 +246,8 @@ router.post('/tickets/:ticketId/messages', authMiddleware, async (req: Request, 
     const userId = requireUserId(req);
     const { ticketId } = req.params;
 
-    const ticket = supportTickets.find((t) => t.id === ticketId && t.userId === userId);
-    if (!ticket) {
+    const ticket = await supportRepository.findTicketById(ticketId);
+    if (!ticket || ticket.user_id !== userId) {
       throw new ApiError(404, 'Ticket not found');
     }
 
@@ -316,24 +260,19 @@ router.post('/tickets/:ticketId/messages', authMiddleware, async (req: Request, 
       throw new ApiError(400, 'Message is required');
     }
 
-    const message: TicketMessage = {
-      id: randomUUID(),
-      ticketId,
-      userId,
+    const message = await supportRepository.createMessage({
+      ticket_id: ticketId,
+      user_id: userId,
       message: validationResult.data.message,
-      isStaff: false,
-      createdAt: new Date(),
-    };
-
-    ticketMessages.push(message);
-    ticket.updatedAt = new Date();
+      is_staff: false,
+    });
 
     res.status(201).json({
       success: true,
       data: {
         id: message.id,
         message: message.message,
-        createdAt: message.createdAt.toISOString(),
+        createdAt: message.created_at,
       },
     });
   } catch (error) {
@@ -365,14 +304,12 @@ router.post('/tickets/:ticketId/close', authMiddleware, async (req: Request, res
     const userId = requireUserId(req);
     const { ticketId } = req.params;
 
-    const ticket = supportTickets.find((t) => t.id === ticketId && t.userId === userId);
-    if (!ticket) {
+    const ticket = await supportRepository.findTicketById(ticketId);
+    if (!ticket || ticket.user_id !== userId) {
       throw new ApiError(404, 'Ticket not found');
     }
 
-    ticket.status = 'closed';
-    ticket.resolvedAt = new Date();
-    ticket.updatedAt = new Date();
+    await supportRepository.closeTicket(ticketId);
 
     logger.info({ userId, ticketId }, 'Support ticket closed');
 
@@ -409,8 +346,8 @@ router.post('/tickets/:ticketId/reopen', authMiddleware, async (req: Request, re
     const userId = requireUserId(req);
     const { ticketId } = req.params;
 
-    const ticket = supportTickets.find((t) => t.id === ticketId && t.userId === userId);
-    if (!ticket) {
+    const ticket = await supportRepository.findTicketById(ticketId);
+    if (!ticket || ticket.user_id !== userId) {
       throw new ApiError(404, 'Ticket not found');
     }
 
@@ -418,9 +355,7 @@ router.post('/tickets/:ticketId/reopen', authMiddleware, async (req: Request, re
       throw new ApiError(400, 'Ticket is not closed');
     }
 
-    ticket.status = 'open';
-    ticket.resolvedAt = null;
-    ticket.updatedAt = new Date();
+    await supportRepository.reopenTicket(ticketId);
 
     res.status(200).json({
       success: true,
@@ -471,19 +406,15 @@ router.post('/errors', async (req: Request, res: Response, next: NextFunction) =
 
     const { errorType, message, stack, context, url } = validationResult.data;
 
-    const report: ErrorReport = {
-      id: randomUUID(),
-      userId: null, // Can be populated from optional auth
-      errorType,
+    const report = await supportRepository.createErrorReport({
+      user_id: null, // Can be populated from optional auth
+      error_type: errorType,
       message,
       stack: stack || null,
       context: context || {},
       url: url || null,
-      userAgent: req.headers['user-agent'] || null,
-      createdAt: new Date(),
-    };
-
-    errorReports.push(report);
+      user_agent: req.headers['user-agent'] || null,
+    });
 
     logger.warn({ errorType, message, url }, 'Client error reported');
 
@@ -525,21 +456,15 @@ router.get('/errors/all', authMiddleware, requireRoles('admin'), async (req: Req
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
   const errorType = req.query.errorType as string | undefined;
 
-  let reports = errorReports;
-  if (errorType) {
-    reports = reports.filter((r) => r.errorType === errorType);
-  }
+  const reports = await supportRepository.getErrorReports({ errorType, limit });
 
-  const result = reports
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .slice(0, limit)
-    .map((r) => ({
-      id: r.id,
-      errorType: r.errorType,
-      message: r.message,
-      url: r.url,
-      createdAt: r.createdAt.toISOString(),
-    }));
+  const result = reports.map((r) => ({
+    id: r.id,
+    errorType: r.error_type,
+    message: r.message,
+    url: r.url,
+    createdAt: r.created_at,
+  }));
 
   res.status(200).json({
     success: true,
@@ -653,27 +578,18 @@ router.get('/tickets/all', authMiddleware, requireRoles('admin'), async (req: Re
   const priority = req.query.priority as string | undefined;
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
 
-  let tickets = [...supportTickets];
-  if (status) {
-    tickets = tickets.filter((t) => t.status === status);
-  }
-  if (priority) {
-    tickets = tickets.filter((t) => t.priority === priority);
-  }
+  const tickets = await supportRepository.findAllTickets({ status, priority, limit });
 
-  const result = tickets
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    .slice(0, limit)
-    .map((t) => ({
-      id: t.id,
-      userId: t.userId,
-      subject: t.subject,
-      category: t.category,
-      priority: t.priority,
-      status: t.status,
-      assignedTo: t.assignedTo,
-      createdAt: t.createdAt.toISOString(),
-    }));
+  const result = tickets.map((t) => ({
+    id: t.id,
+    userId: t.user_id,
+    subject: t.subject,
+    category: t.category,
+    priority: t.priority,
+    status: t.status,
+    assignedTo: t.assigned_to,
+    createdAt: t.created_at,
+  }));
 
   res.status(200).json({
     success: true,
@@ -716,14 +632,15 @@ router.post('/tickets/:ticketId/assign', authMiddleware, requireRoles('admin'), 
     const { ticketId } = req.params;
     const { assigneeId } = req.body;
 
-    const ticket = supportTickets.find((t) => t.id === ticketId);
+    const ticket = await supportRepository.findTicketById(ticketId);
     if (!ticket) {
       throw new ApiError(404, 'Ticket not found');
     }
 
-    ticket.assignedTo = assigneeId;
-    ticket.status = 'in_progress';
-    ticket.updatedAt = new Date();
+    await supportRepository.updateTicket(ticketId, {
+      assigned_to: assigneeId,
+      status: 'in_progress',
+    });
 
     res.status(200).json({
       success: true,

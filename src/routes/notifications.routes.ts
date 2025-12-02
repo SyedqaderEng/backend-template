@@ -3,19 +3,9 @@ import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
+import { notificationsRepository } from '../database';
 
 const router = Router();
-
-// In-memory notification storage (in production, use Supabase)
-const notifications: Array<{
-  id: string;
-  userId: string;
-  type: string;
-  title: string;
-  message: string;
-  read: boolean;
-  createdAt: Date;
-}> = [];
 
 /**
  * Send notification schema
@@ -87,37 +77,36 @@ const sendNotificationSchema = z.object({
 router.get(
   '/',
   authMiddleware,
-  async (req: Request, res: Response) => {
-    const clerkUserId = requireUserId(req);
-    const unreadOnly = req.query.unread_only === 'true';
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clerkUserId = requireUserId(req);
+      const unreadOnly = req.query.unread_only === 'true';
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
 
-    let userNotifications = notifications
-      .filter((n) => n.userId === clerkUserId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      const notifications = await notificationsRepository.findByUserId(
+        clerkUserId,
+        { unreadOnly, limit }
+      );
 
-    if (unreadOnly) {
-      userNotifications = userNotifications.filter((n) => !n.read);
+      const unreadCount = await notificationsRepository.getUnreadCount(clerkUserId);
+
+      res.status(200).json({
+        success: true,
+        data: {
+          notifications: notifications.map((n) => ({
+            id: n.id,
+            type: n.type,
+            title: n.title,
+            message: n.message,
+            read: n.read,
+            createdAt: n.created_at,
+          })),
+          unreadCount,
+        },
+      });
+    } catch (error) {
+      next(error);
     }
-
-    const unreadCount = notifications.filter(
-      (n) => n.userId === clerkUserId && !n.read
-    ).length;
-
-    res.status(200).json({
-      success: true,
-      data: {
-        notifications: userNotifications.slice(0, limit).map((n) => ({
-          id: n.id,
-          type: n.type,
-          title: n.title,
-          message: n.message,
-          read: n.read,
-          createdAt: n.createdAt.toISOString(),
-        })),
-        unreadCount,
-      },
-    });
   }
 );
 
@@ -178,17 +167,13 @@ router.post(
 
       const { userId, type, title, message } = validationResult.data;
 
-      const notification = {
-        id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        userId,
+      const notification = await notificationsRepository.create({
+        user_id: userId,
         type,
         title,
         message,
-        read: false,
-        createdAt: new Date(),
-      };
+      });
 
-      notifications.push(notification);
       logger.info({ notificationId: notification.id, userId }, 'Notification sent');
 
       res.status(201).json({
@@ -234,15 +219,11 @@ router.post(
       const clerkUserId = requireUserId(req);
       const { id } = req.params;
 
-      const notification = notifications.find(
-        (n) => n.id === id && n.userId === clerkUserId
-      );
+      const success = await notificationsRepository.markAsRead(id, clerkUserId);
 
-      if (!notification) {
+      if (!success) {
         throw new ApiError(404, 'Notification not found');
       }
-
-      notification.read = true;
 
       res.status(200).json({
         success: true,
@@ -272,19 +253,19 @@ router.post(
 router.post(
   '/read-all',
   authMiddleware,
-  async (req: Request, res: Response) => {
-    const clerkUserId = requireUserId(req);
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clerkUserId = requireUserId(req);
 
-    notifications
-      .filter((n) => n.userId === clerkUserId)
-      .forEach((n) => {
-        n.read = true;
+      await notificationsRepository.markAllAsRead(clerkUserId);
+
+      res.status(200).json({
+        success: true,
+        message: 'All notifications marked as read',
       });
-
-    res.status(200).json({
-      success: true,
-      message: 'All notifications marked as read',
-    });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 

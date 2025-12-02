@@ -3,20 +3,9 @@ import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
+import { logsRepository } from '../database';
 
 const router = Router();
-
-// In-memory log storage (in production, use Supabase)
-const activityLogs: Array<{
-  id: string;
-  userId: string;
-  action: string;
-  resource: string;
-  details: Record<string, unknown>;
-  ipAddress: string;
-  userAgent: string;
-  createdAt: Date;
-}> = [];
 
 /**
  * Log record schema
@@ -89,21 +78,22 @@ router.get(
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
     const offset = parseInt(req.query.offset as string) || 0;
 
-    const userLogs = activityLogs
-      .filter((log) => log.userId === clerkUserId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const { logs, total } = await logsRepository.findByUserId(clerkUserId, {
+      limit,
+      offset,
+    });
 
     res.status(200).json({
       success: true,
       data: {
-        logs: userLogs.slice(offset, offset + limit).map((log) => ({
+        logs: logs.map((log) => ({
           id: log.id,
           action: log.action,
           resource: log.resource,
           details: log.details,
-          createdAt: log.createdAt.toISOString(),
+          createdAt: log.created_at,
         })),
-        total: userLogs.length,
+        total,
       },
     });
   }
@@ -173,18 +163,15 @@ router.post(
       const clerkUserId = requireUserId(req);
       const { action, resource, details } = validationResult.data;
 
-      const logEntry = {
-        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        userId: clerkUserId,
+      const logEntry = await logsRepository.create({
+        user_id: clerkUserId,
         action,
         resource,
         details: details || {},
-        ipAddress: req.ip || 'unknown',
-        userAgent: req.headers['user-agent'] || 'unknown',
-        createdAt: new Date(),
-      };
+        ip_address: req.ip || null,
+        user_agent: req.headers['user-agent'] || null,
+      });
 
-      activityLogs.push(logEntry);
       logger.debug({ logEntry }, 'Activity log recorded');
 
       res.status(201).json({
@@ -241,21 +228,17 @@ router.get(
     const userId = req.query.userId as string | undefined;
     const action = req.query.action as string | undefined;
 
-    let filtered = [...activityLogs];
-    if (userId) {
-      filtered = filtered.filter((log) => log.userId === userId);
-    }
-    if (action) {
-      filtered = filtered.filter((log) => log.action === action);
-    }
-
-    filtered.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const logs = await logsRepository.findAll({
+      userId,
+      action,
+      limit,
+    });
 
     res.status(200).json({
       success: true,
       data: {
-        logs: filtered.slice(0, limit),
-        total: filtered.length,
+        logs,
+        total: logs.length,
       },
     });
   }

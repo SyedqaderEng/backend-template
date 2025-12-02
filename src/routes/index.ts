@@ -4,7 +4,6 @@ import { userRouter } from './user.routes';
 import { subscriptionRouter } from './subscription.routes';
 import { webhookRouter } from './webhook.routes';
 import { billingRouter } from './billing.routes';
-import { uploadRouter } from './upload.routes';
 import { authRouter } from './auth.routes';
 import { rolesRouter } from './roles.routes';
 import { emailRouter } from './email.routes';
@@ -51,9 +50,6 @@ router.use('/v1/billing', billingRouter);
 
 // API v1 routes - Features & Plans
 router.use('/v1/features', featuresRouter);
-
-// API v1 routes - File Management
-router.use('/v1/upload', uploadRouter);
 
 // API v1 routes - Notifications & Logs
 router.use('/v1/notifications', notificationsRouter);

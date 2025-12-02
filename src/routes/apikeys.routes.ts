@@ -4,20 +4,9 @@ import { randomBytes, createHash } from 'crypto';
 import { authMiddleware, requireUserId } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
+import { apiKeysRepository } from '../database';
 
 const router = Router();
-
-// In-memory API key storage (in production, use Supabase)
-const apiKeys: Array<{
-  id: string;
-  userId: string;
-  name: string;
-  keyHash: string;
-  keyPrefix: string;
-  createdAt: Date;
-  lastUsedAt: Date | null;
-  expiresAt: Date | null;
-}> = [];
 
 const MAX_KEYS_PER_USER = 5;
 
@@ -102,22 +91,22 @@ router.get(
   async (req: Request, res: Response) => {
     const clerkUserId = requireUserId(req);
 
-    const userKeys = apiKeys
-      .filter((k) => k.userId === clerkUserId)
-      .map((k) => ({
-        id: k.id,
-        name: k.name,
-        keyPrefix: k.keyPrefix + '...',
-        createdAt: k.createdAt.toISOString(),
-        lastUsedAt: k.lastUsedAt?.toISOString() || null,
-        expiresAt: k.expiresAt?.toISOString() || null,
-      }));
+    const userKeys = await apiKeysRepository.findByUserId(clerkUserId);
+
+    const formattedKeys = userKeys.map((k) => ({
+      id: k.id,
+      name: k.name,
+      keyPrefix: k.key_prefix + '...',
+      createdAt: k.created_at,
+      lastUsedAt: k.last_used_at || null,
+      expiresAt: k.expires_at || null,
+    }));
 
     res.status(200).json({
       success: true,
       data: {
-        keys: userKeys,
-        remaining: MAX_KEYS_PER_USER - userKeys.length,
+        keys: formattedKeys,
+        remaining: MAX_KEYS_PER_USER - formattedKeys.length,
       },
     });
   }
@@ -200,7 +189,7 @@ router.post(
       const { name, expiresInDays } = validationResult.data;
 
       // Check key limit
-      const userKeyCount = apiKeys.filter((k) => k.userId === clerkUserId).length;
+      const userKeyCount = await apiKeysRepository.countByUserId(clerkUserId);
       if (userKeyCount >= MAX_KEYS_PER_USER) {
         throw new ApiError(400, `Maximum of ${MAX_KEYS_PER_USER} API keys allowed per user`);
       }
@@ -210,21 +199,17 @@ router.post(
       const keyHash = hashApiKey(key);
 
       const expiresAt = expiresInDays
-        ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+        ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
         : null;
 
-      const apiKey = {
-        id: `key_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        userId: clerkUserId,
+      const apiKey = await apiKeysRepository.create({
+        user_id: clerkUserId,
         name,
-        keyHash,
-        keyPrefix: prefix,
-        createdAt: new Date(),
-        lastUsedAt: null,
-        expiresAt,
-      };
+        key_hash: keyHash,
+        key_prefix: prefix,
+        expires_at: expiresAt,
+      });
 
-      apiKeys.push(apiKey);
       logger.info({ keyId: apiKey.id, userId: clerkUserId }, 'API key created');
 
       res.status(201).json({
@@ -233,7 +218,7 @@ router.post(
           id: apiKey.id,
           key, // Only shown once!
           name: apiKey.name,
-          expiresAt: expiresAt?.toISOString() || null,
+          expiresAt: apiKey.expires_at || null,
         },
       });
     } catch (error) {
@@ -273,15 +258,12 @@ router.delete(
       const clerkUserId = requireUserId(req);
       const { id } = req.params;
 
-      const keyIndex = apiKeys.findIndex(
-        (k) => k.id === id && k.userId === clerkUserId
-      );
+      const deleted = await apiKeysRepository.delete(id, clerkUserId);
 
-      if (keyIndex === -1) {
+      if (!deleted) {
         throw new ApiError(404, 'API key not found');
       }
 
-      apiKeys.splice(keyIndex, 1);
       logger.info({ keyId: id, userId: clerkUserId }, 'API key revoked');
 
       res.status(200).json({

@@ -3,39 +3,10 @@ import { z } from 'zod';
 import { authMiddleware, requireUserId } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
-import { randomUUID, createHash } from 'crypto';
+import { createHash } from 'crypto';
+import { webhooksRepository } from '../database';
 
 const router = Router();
-
-// In-memory webhook storage
-interface WebhookEndpoint {
-  id: string;
-  userId: string;
-  url: string;
-  secret: string;
-  events: string[];
-  active: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  failureCount: number;
-  lastTriggeredAt: Date | null;
-}
-
-interface WebhookDelivery {
-  id: string;
-  webhookId: string;
-  event: string;
-  payload: Record<string, unknown>;
-  status: 'pending' | 'success' | 'failed';
-  statusCode: number | null;
-  response: string | null;
-  attempts: number;
-  createdAt: Date;
-  deliveredAt: Date | null;
-}
-
-const webhookEndpoints: WebhookEndpoint[] = [];
-const webhookDeliveries: WebhookDelivery[] = [];
 
 const AVAILABLE_EVENTS = [
   'user.created',
@@ -72,7 +43,7 @@ const updateWebhookSchema = z.object({
 });
 
 function generateWebhookSecret(): string {
-  return `whsec_${createHash('sha256').update(randomUUID()).digest('hex').substring(0, 32)}`;
+  return `whsec_${createHash('sha256').update(Date.now().toString()).digest('hex').substring(0, 32)}`;
 }
 
 /**
@@ -115,17 +86,17 @@ function generateWebhookSecret(): string {
 router.get('/', authMiddleware, async (req: Request, res: Response) => {
   const userId = requireUserId(req);
 
-  const userWebhooks = webhookEndpoints
-    .filter((w) => w.userId === userId)
-    .map((w) => ({
-      id: w.id,
-      url: w.url,
-      events: w.events,
-      active: w.active,
-      failureCount: w.failureCount,
-      lastTriggeredAt: w.lastTriggeredAt?.toISOString() || null,
-      createdAt: w.createdAt.toISOString(),
-    }));
+  const webhooks = await webhooksRepository.findByUserId(userId);
+
+  const userWebhooks = webhooks.map((w) => ({
+    id: w.id,
+    url: w.url,
+    events: w.events,
+    active: w.active,
+    failureCount: w.failure_count,
+    lastTriggeredAt: w.last_triggered_at,
+    createdAt: w.created_at,
+  }));
 
   res.status(200).json({
     success: true,
@@ -189,20 +160,13 @@ router.post('/', authMiddleware, async (req: Request, res: Response, next: NextF
       throw new ApiError(400, `Invalid events: ${invalidEvents.join(', ')}`);
     }
 
-    const webhook: WebhookEndpoint = {
-      id: randomUUID(),
-      userId,
+    const webhook = await webhooksRepository.create({
+      user_id: userId,
       url,
       secret: generateWebhookSecret(),
       events,
       active: active ?? true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      failureCount: 0,
-      lastTriggeredAt: null,
-    };
-
-    webhookEndpoints.push(webhook);
+    });
 
     logger.info({ userId, webhookId: webhook.id, url }, 'Webhook endpoint created');
 
@@ -214,7 +178,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response, next: NextF
         secret: webhook.secret,
         events: webhook.events,
         active: webhook.active,
-        createdAt: webhook.createdAt.toISOString(),
+        createdAt: webhook.created_at,
       },
     });
   } catch (error) {
@@ -271,7 +235,7 @@ router.get('/:webhookId', authMiddleware, async (req: Request, res: Response, ne
     const userId = requireUserId(req);
     const { webhookId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
@@ -283,10 +247,10 @@ router.get('/:webhookId', authMiddleware, async (req: Request, res: Response, ne
         url: webhook.url,
         events: webhook.events,
         active: webhook.active,
-        failureCount: webhook.failureCount,
-        lastTriggeredAt: webhook.lastTriggeredAt?.toISOString() || null,
-        createdAt: webhook.createdAt.toISOString(),
-        updatedAt: webhook.updatedAt.toISOString(),
+        failureCount: webhook.failure_count,
+        lastTriggeredAt: webhook.last_triggered_at,
+        createdAt: webhook.created_at,
+        updatedAt: webhook.updated_at,
       },
     });
   } catch (error) {
@@ -333,7 +297,7 @@ router.put('/:webhookId', authMiddleware, async (req: Request, res: Response, ne
     const userId = requireUserId(req);
     const { webhookId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
@@ -349,27 +313,30 @@ router.put('/:webhookId', authMiddleware, async (req: Request, res: Response, ne
 
     const { url, events, active } = validationResult.data;
 
-    if (url) webhook.url = url;
     if (events) {
       const invalidEvents = events.filter((e) => !AVAILABLE_EVENTS.includes(e));
       if (invalidEvents.length > 0) {
         throw new ApiError(400, `Invalid events: ${invalidEvents.join(', ')}`);
       }
-      webhook.events = events;
     }
-    if (active !== undefined) webhook.active = active;
-    webhook.updatedAt = new Date();
+
+    const updates: Partial<Pick<typeof webhook, 'url' | 'events' | 'active'>> = {};
+    if (url) updates.url = url;
+    if (events) updates.events = events;
+    if (active !== undefined) updates.active = active;
+
+    const updatedWebhook = await webhooksRepository.update(webhookId, userId, updates);
 
     logger.info({ userId, webhookId }, 'Webhook endpoint updated');
 
     res.status(200).json({
       success: true,
       data: {
-        id: webhook.id,
-        url: webhook.url,
-        events: webhook.events,
-        active: webhook.active,
-        updatedAt: webhook.updatedAt.toISOString(),
+        id: updatedWebhook.id,
+        url: updatedWebhook.url,
+        events: updatedWebhook.events,
+        active: updatedWebhook.active,
+        updatedAt: updatedWebhook.updated_at,
       },
     });
   } catch (error) {
@@ -401,12 +368,10 @@ router.delete('/:webhookId', authMiddleware, async (req: Request, res: Response,
     const userId = requireUserId(req);
     const { webhookId } = req.params;
 
-    const index = webhookEndpoints.findIndex((w) => w.id === webhookId && w.userId === userId);
-    if (index === -1) {
+    const deleted = await webhooksRepository.delete(webhookId, userId);
+    if (!deleted) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
-
-    webhookEndpoints.splice(index, 1);
 
     logger.info({ userId, webhookId }, 'Webhook endpoint deleted');
 
@@ -443,20 +408,20 @@ router.post('/:webhookId/secret', authMiddleware, async (req: Request, res: Resp
     const userId = requireUserId(req);
     const { webhookId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
 
-    webhook.secret = generateWebhookSecret();
-    webhook.updatedAt = new Date();
+    const newSecret = generateWebhookSecret();
+    await webhooksRepository.update(webhookId, userId, { secret: newSecret });
 
     logger.info({ userId, webhookId }, 'Webhook secret rotated');
 
     res.status(200).json({
       success: true,
       data: {
-        secret: webhook.secret,
+        secret: newSecret,
       },
     });
   } catch (error) {
@@ -488,15 +453,14 @@ router.post('/:webhookId/test', authMiddleware, async (req: Request, res: Respon
     const userId = requireUserId(req);
     const { webhookId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
 
     // Create test delivery record
-    const delivery: WebhookDelivery = {
-      id: randomUUID(),
-      webhookId,
+    const delivery = await webhooksRepository.createDelivery({
+      webhook_id: webhookId,
       event: 'webhook.test',
       payload: {
         type: 'webhook.test',
@@ -506,14 +470,11 @@ router.post('/:webhookId/test', authMiddleware, async (req: Request, res: Respon
         },
       },
       status: 'success',
-      statusCode: 200,
+      status_code: 200,
       response: 'OK',
       attempts: 1,
-      createdAt: new Date(),
-      deliveredAt: new Date(),
-    };
-
-    webhookDeliveries.push(delivery);
+      delivered_at: new Date().toISOString(),
+    });
 
     logger.info({ userId, webhookId }, 'Test webhook sent');
 
@@ -560,28 +521,26 @@ router.get('/:webhookId/deliveries', authMiddleware, async (req: Request, res: R
     const { webhookId } = req.params;
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
 
-    const deliveries = webhookDeliveries
-      .filter((d) => d.webhookId === webhookId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, limit)
-      .map((d) => ({
-        id: d.id,
-        event: d.event,
-        status: d.status,
-        statusCode: d.statusCode,
-        attempts: d.attempts,
-        createdAt: d.createdAt.toISOString(),
-        deliveredAt: d.deliveredAt?.toISOString() || null,
-      }));
+    const deliveries = await webhooksRepository.getDeliveries(webhookId, limit);
+
+    const formattedDeliveries = deliveries.map((d) => ({
+      id: d.id,
+      event: d.event,
+      status: d.status,
+      statusCode: d.status_code,
+      attempts: d.attempts,
+      createdAt: d.created_at,
+      deliveredAt: d.delivered_at,
+    }));
 
     res.status(200).json({
       success: true,
-      data: deliveries,
+      data: formattedDeliveries,
     });
   } catch (error) {
     next(error);
@@ -617,12 +576,12 @@ router.get('/:webhookId/deliveries/:deliveryId', authMiddleware, async (req: Req
     const userId = requireUserId(req);
     const { webhookId, deliveryId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
 
-    const delivery = webhookDeliveries.find((d) => d.id === deliveryId && d.webhookId === webhookId);
+    const delivery = await webhooksRepository.getDeliveryById(deliveryId, webhookId);
     if (!delivery) {
       throw new ApiError(404, 'Delivery not found');
     }
@@ -634,11 +593,11 @@ router.get('/:webhookId/deliveries/:deliveryId', authMiddleware, async (req: Req
         event: delivery.event,
         payload: delivery.payload,
         status: delivery.status,
-        statusCode: delivery.statusCode,
+        statusCode: delivery.status_code,
         response: delivery.response,
         attempts: delivery.attempts,
-        createdAt: delivery.createdAt.toISOString(),
-        deliveredAt: delivery.deliveredAt?.toISOString() || null,
+        createdAt: delivery.created_at,
+        deliveredAt: delivery.delivered_at,
       },
     });
   } catch (error) {
@@ -675,20 +634,22 @@ router.post('/:webhookId/deliveries/:deliveryId/retry', authMiddleware, async (r
     const userId = requireUserId(req);
     const { webhookId, deliveryId } = req.params;
 
-    const webhook = webhookEndpoints.find((w) => w.id === webhookId && w.userId === userId);
+    const webhook = await webhooksRepository.findById(webhookId, userId);
     if (!webhook) {
       throw new ApiError(404, 'Webhook endpoint not found');
     }
 
-    const delivery = webhookDeliveries.find((d) => d.id === deliveryId && d.webhookId === webhookId);
+    const delivery = await webhooksRepository.getDeliveryById(deliveryId, webhookId);
     if (!delivery) {
       throw new ApiError(404, 'Delivery not found');
     }
 
-    delivery.attempts += 1;
-    delivery.status = 'success';
-    delivery.statusCode = 200;
-    delivery.deliveredAt = new Date();
+    const updatedDelivery = await webhooksRepository.updateDelivery(deliveryId, {
+      attempts: delivery.attempts + 1,
+      status: 'success',
+      status_code: 200,
+      delivered_at: new Date().toISOString(),
+    });
 
     logger.info({ userId, webhookId, deliveryId }, 'Webhook delivery retried');
 
@@ -696,8 +657,8 @@ router.post('/:webhookId/deliveries/:deliveryId/retry', authMiddleware, async (r
       success: true,
       message: 'Delivery retried successfully',
       data: {
-        status: delivery.status,
-        attempts: delivery.attempts,
+        status: updatedDelivery.status,
+        attempts: updatedDelivery.attempts,
       },
     });
   } catch (error) {

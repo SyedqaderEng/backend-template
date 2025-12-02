@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
+import { analyticsRepository } from '../database';
 
 const router = Router();
 
@@ -58,36 +59,40 @@ router.get(
   authMiddleware,
   requireRoles('admin'),
   async (_req: Request, res: Response) => {
-    // In production, these would come from real analytics data
-    res.status(200).json({
-      success: true,
-      data: {
-        activeUsers: {
-          daily: 150,
-          weekly: 450,
-          monthly: 1200,
-        },
-        subscriptions: {
-          total: 500,
-          byPlan: {
-            free: 300,
-            basic: 120,
-            pro: 65,
-            enterprise: 15,
+    try {
+      // Get real active user stats from analytics repository
+      const overviewStats = await analyticsRepository.getOverviewStats();
+
+      // Get real subscription stats from analytics repository
+      const subscriptionStats = await analyticsRepository.getSubscriptionStats();
+
+      res.status(200).json({
+        success: true,
+        data: {
+          activeUsers: overviewStats.activeUsers,
+          subscriptions: {
+            total: subscriptionStats.total,
+            byPlan: subscriptionStats.byPlan,
           },
+          // These would need separate tracking - keeping as mock for now
+          uploads: {
+            daily: 0,
+            totalSize: '0 GB',
+          },
+          revenue: {
+            monthly: 0,
+            annual: 0,
+            currency: 'USD',
+          },
+          timestamp: new Date().toISOString(),
         },
-        uploads: {
-          daily: 45,
-          totalSize: '2.5 GB',
-        },
-        revenue: {
-          monthly: 4500,
-          annual: 52000,
-          currency: 'USD',
-        },
-        timestamp: new Date().toISOString(),
-      },
-    });
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch analytics overview',
+      });
+    }
   }
 );
 
@@ -121,16 +126,31 @@ router.get(
   '/events',
   authMiddleware,
   async (req: Request, res: Response) => {
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    try {
+      const clerkUserId = requireUserId(req);
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+      const eventType = req.query.type as string | undefined;
 
-    res.status(200).json({
-      success: true,
-      data: {
-        events: [],
-        total: 0,
+      // Get real events from analytics repository
+      const events = await analyticsRepository.getEventsByUserId(clerkUserId, {
+        eventType,
         limit,
-      },
-    });
+      });
+
+      res.status(200).json({
+        success: true,
+        data: {
+          events,
+          total: events.length,
+          limit,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch analytics events',
+      });
+    }
   }
 );
 
@@ -167,20 +187,35 @@ router.post(
   '/events',
   authMiddleware,
   async (req: Request, res: Response) => {
-    const clerkUserId = requireUserId(req);
-    const { event, properties } = req.body;
+    try {
+      const clerkUserId = requireUserId(req);
+      const { event, properties, session_id } = req.body;
 
-    // In production, store to analytics service
-    res.status(201).json({
-      success: true,
-      data: {
-        eventId: `evt_${Date.now()}`,
+      // Persist event using analytics repository
+      const trackedEvent = await analyticsRepository.trackEvent({
+        user_id: clerkUserId,
         event,
-        userId: clerkUserId,
-        properties,
-        timestamp: new Date().toISOString(),
-      },
-    });
+        properties: properties || {},
+        session_id: session_id || null,
+      });
+
+      res.status(201).json({
+        success: true,
+        data: {
+          eventId: trackedEvent.id,
+          event: trackedEvent.event,
+          userId: trackedEvent.user_id,
+          properties: trackedEvent.properties,
+          sessionId: trackedEvent.session_id,
+          timestamp: trackedEvent.created_at,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to track analytics event',
+      });
+    }
   }
 );
 
@@ -203,23 +238,34 @@ router.get(
   '/usage',
   authMiddleware,
   async (req: Request, res: Response) => {
-    const clerkUserId = requireUserId(req);
+    try {
+      const clerkUserId = requireUserId(req);
 
-    res.status(200).json({
-      success: true,
-      data: {
-        userId: clerkUserId,
-        period: 'current_month',
-        apiCalls: 1250,
-        uploads: 15,
-        storageUsed: '125 MB',
-        limits: {
-          apiCallsLimit: 10000,
-          uploadsLimit: 100,
-          storageLimit: '1 GB',
+      // Get real API call count from analytics repository
+      const usageStats = await analyticsRepository.getUserUsageStats(clerkUserId);
+
+      res.status(200).json({
+        success: true,
+        data: {
+          userId: clerkUserId,
+          period: usageStats.period,
+          apiCalls: usageStats.apiCalls,
+          // These would need separate tracking - keeping as mock for now
+          uploads: 0,
+          storageUsed: '0 MB',
+          limits: {
+            apiCallsLimit: 10000,
+            uploadsLimit: 100,
+            storageLimit: '1 GB',
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch usage statistics',
+      });
+    }
   }
 );
 

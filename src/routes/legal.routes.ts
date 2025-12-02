@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, requireUserId, requireRoles } from '../middleware';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { logger } from '../utils/logger';
+import { legalRepository } from '../database';
 
 const router = Router();
 
@@ -123,9 +124,6 @@ You can control cookies through your browser settings.
     lastUpdated: new Date(),
   },
 ];
-
-// Track user consent
-const userConsents: Map<string, { termsAccepted: Date; privacyAccepted: Date }> = new Map();
 
 /**
  * @openapi
@@ -284,7 +282,7 @@ router.get(
   authMiddleware,
   async (req: Request, res: Response) => {
     const clerkUserId = requireUserId(req);
-    const consent = userConsents.get(clerkUserId);
+    const consent = await legalRepository.findConsentByUserId(clerkUserId);
 
     const terms = legalDocuments.find((d) => d.type === 'terms');
     const privacy = legalDocuments.find((d) => d.type === 'privacy');
@@ -292,10 +290,10 @@ router.get(
     res.status(200).json({
       success: true,
       data: {
-        termsAccepted: !!consent?.termsAccepted,
-        termsAcceptedAt: consent?.termsAccepted?.toISOString() || null,
-        privacyAccepted: !!consent?.privacyAccepted,
-        privacyAcceptedAt: consent?.privacyAccepted?.toISOString() || null,
+        termsAccepted: !!consent?.terms_accepted_at,
+        termsAcceptedAt: consent?.terms_accepted_at || null,
+        privacyAccepted: !!consent?.privacy_accepted_at,
+        privacyAcceptedAt: consent?.privacy_accepted_at || null,
         currentTermsVersion: terms?.version,
         currentPrivacyVersion: privacy?.version,
       },
@@ -364,11 +362,14 @@ router.post(
         throw new ApiError(400, 'You must accept both Terms of Service and Privacy Policy');
       }
 
-      const now = new Date();
-      userConsents.set(clerkUserId, {
-        termsAccepted: now,
-        privacyAccepted: now,
-      });
+      const terms = legalDocuments.find((d) => d.type === 'terms');
+      const privacy = legalDocuments.find((d) => d.type === 'privacy');
+
+      const consent = await legalRepository.acceptTerms(
+        clerkUserId,
+        terms?.version || '1.0',
+        privacy?.version || '1.0'
+      );
 
       logger.info({ clerkUserId }, 'User accepted legal terms');
 
@@ -376,8 +377,8 @@ router.post(
         success: true,
         message: 'Consent recorded successfully',
         data: {
-          termsAcceptedAt: now.toISOString(),
-          privacyAcceptedAt: now.toISOString(),
+          termsAcceptedAt: consent.terms_accepted_at,
+          privacyAcceptedAt: consent.privacy_accepted_at,
         },
       });
     } catch (error) {
@@ -420,20 +421,39 @@ router.post(
 router.post(
   '/gdpr/export',
   authMiddleware,
-  async (req: Request, res: Response) => {
-    const clerkUserId = requireUserId(req);
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clerkUserId = requireUserId(req);
 
-    logger.info({ clerkUserId }, 'GDPR data export requested');
+      // Check for existing pending export request
+      const existingRequest = await legalRepository.findPendingGdprRequest(clerkUserId, 'export');
+      if (existingRequest) {
+        throw new ApiError(400, 'You already have a pending export request');
+      }
 
-    // In production, queue the export job
-    res.status(200).json({
-      success: true,
-      message: 'Data export request submitted. You will receive an email when ready.',
-      data: {
-        requestId: `export_${Date.now()}`,
-        estimatedCompletion: new Date(Date.now() + 24 * 3600000).toISOString(),
-      },
-    });
+      const scheduledAt = new Date(Date.now() + 24 * 3600000); // 24 hours from now
+
+      const gdprRequest = await legalRepository.createGdprRequest({
+        user_id: clerkUserId,
+        request_type: 'export',
+        status: 'pending',
+        reason: null,
+        scheduled_at: scheduledAt.toISOString(),
+      });
+
+      logger.info({ clerkUserId, requestId: gdprRequest.id }, 'GDPR data export requested');
+
+      res.status(200).json({
+        success: true,
+        message: 'Data export request submitted. You will receive an email when ready.',
+        data: {
+          requestId: gdprRequest.id,
+          estimatedCompletion: gdprRequest.scheduled_at,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 
@@ -481,16 +501,31 @@ router.post(
         throw new ApiError(400, 'You must confirm deletion by setting confirmDeletion to true');
       }
 
-      logger.warn({ clerkUserId, reason }, 'GDPR account deletion requested');
+      // Check for existing pending delete request
+      const existingRequest = await legalRepository.findPendingGdprRequest(clerkUserId, 'delete');
+      if (existingRequest) {
+        throw new ApiError(400, 'You already have a pending deletion request');
+      }
 
-      // In production, queue the deletion job (usually with a 30-day grace period)
+      const scheduledAt = new Date(Date.now() + 30 * 24 * 3600000); // 30 days from now
+
+      const gdprRequest = await legalRepository.createGdprRequest({
+        user_id: clerkUserId,
+        request_type: 'delete',
+        status: 'pending',
+        reason: reason || null,
+        scheduled_at: scheduledAt.toISOString(),
+      });
+
+      logger.warn({ clerkUserId, requestId: gdprRequest.id, reason }, 'GDPR account deletion requested');
+
       res.status(200).json({
         success: true,
         message: 'Account deletion scheduled. You have 30 days to cancel this request.',
         data: {
-          requestId: `delete_${Date.now()}`,
-          scheduledDeletion: new Date(Date.now() + 30 * 24 * 3600000).toISOString(),
-          canCancelUntil: new Date(Date.now() + 30 * 24 * 3600000).toISOString(),
+          requestId: gdprRequest.id,
+          scheduledDeletion: gdprRequest.scheduled_at,
+          canCancelUntil: gdprRequest.scheduled_at,
         },
       });
     } catch (error) {

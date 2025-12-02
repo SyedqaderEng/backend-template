@@ -5,6 +5,7 @@ import { env } from '../config/env';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware';
 import { logger } from '../utils/logger';
+import { sessionsRepository } from '../database';
 
 const router = Router();
 
@@ -237,10 +238,6 @@ router.get(
   }
 );
 
-// In-memory session/token storage (in production, use Redis)
-const activeSessions: Map<string, { userId: string; createdAt: Date; lastActive: Date; device: string; ip: string }> = new Map();
-const refreshTokens: Map<string, { userId: string; expiresAt: Date }> = new Map();
-
 /**
  * @openapi
  * /v1/auth/refresh:
@@ -272,17 +269,29 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       throw new ApiError(400, 'Refresh token is required');
     }
 
-    const tokenData = refreshTokens.get(refreshToken);
-    if (!tokenData || tokenData.expiresAt < new Date()) {
+    // Find and validate the refresh token
+    const tokenData = await sessionsRepository.findRefreshToken(refreshToken);
+    if (!tokenData) {
       throw new ApiError(401, 'Invalid or expired refresh token');
     }
+
+    // Revoke the old refresh token
+    await sessionsRepository.revokeRefreshToken(tokenData.id);
+
+    // Create a new refresh token
+    const newRefreshToken = await sessionsRepository.createRefreshToken(
+      tokenData.user_id,
+      {
+        expiresInDays: 30, // 30 days
+      }
+    );
 
     // In production, generate new JWT tokens via Clerk
     res.status(200).json({
       success: true,
       data: {
         accessToken: `mock_access_${Date.now()}`,
-        refreshToken: `mock_refresh_${Date.now()}`,
+        refreshToken: newRefreshToken.token,
         expiresIn: 3600,
       },
     });
@@ -309,12 +318,12 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
 router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
   const userId = req.auth?.userId;
 
-  // Remove user's sessions
-  for (const [sessionId, session] of activeSessions.entries()) {
-    if (session.userId === userId) {
-      activeSessions.delete(sessionId);
-    }
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized');
   }
+
+  // Remove all user's sessions
+  await sessionsRepository.deleteAllUserSessions(userId);
 
   logger.info({ userId }, 'User logged out');
 
@@ -340,13 +349,17 @@ router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
 router.post('/logout-all', authMiddleware, async (req: Request, res: Response) => {
   const userId = req.auth?.userId;
 
-  let count = 0;
-  for (const [sessionId, session] of activeSessions.entries()) {
-    if (session.userId === userId) {
-      activeSessions.delete(sessionId);
-      count++;
-    }
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized');
   }
+
+  // Get current sessions count before deleting
+  const userSessions = await sessionsRepository.findSessionsByUserId(userId);
+  const count = userSessions.length;
+
+  // Remove all user's sessions and refresh tokens
+  await sessionsRepository.deleteAllUserSessions(userId);
+  await sessionsRepository.revokeAllUserRefreshTokens(userId);
 
   logger.info({ userId, sessionsRevoked: count }, 'All sessions revoked');
 
@@ -373,18 +386,21 @@ router.post('/logout-all', authMiddleware, async (req: Request, res: Response) =
 router.get('/sessions', authMiddleware, async (req: Request, res: Response) => {
   const userId = req.auth?.userId;
 
-  const userSessions = [];
-  for (const [sessionId, session] of activeSessions.entries()) {
-    if (session.userId === userId) {
-      userSessions.push({
-        id: sessionId,
-        device: session.device,
-        ip: session.ip,
-        createdAt: session.createdAt.toISOString(),
-        lastActive: session.lastActive.toISOString(),
-      });
-    }
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized');
   }
+
+  // Get user's sessions from the database
+  const sessions = await sessionsRepository.findSessionsByUserId(userId);
+
+  // Map database fields to response format
+  const userSessions = sessions.map((session) => ({
+    id: session.id,
+    device: session.device_info || 'Unknown',
+    ip: session.ip_address || 'Unknown',
+    createdAt: session.created_at,
+    lastActive: session.last_active_at,
+  }));
 
   res.status(200).json({
     success: true,
@@ -418,12 +434,12 @@ router.delete('/sessions/:sessionId', authMiddleware, async (req: Request, res: 
     const userId = req.auth?.userId;
     const { sessionId } = req.params;
 
-    const session = activeSessions.get(sessionId);
-    if (!session || session.userId !== userId) {
-      throw new ApiError(404, 'Session not found');
+    if (!userId) {
+      throw new ApiError(401, 'Unauthorized');
     }
 
-    activeSessions.delete(sessionId);
+    // Delete the session (this will throw if session doesn't exist or doesn't belong to user)
+    await sessionsRepository.deleteSession(sessionId, userId);
 
     res.status(200).json({
       success: true,

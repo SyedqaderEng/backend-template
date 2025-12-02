@@ -3,7 +3,6 @@ import { env, isProduction } from '../config/env';
 import { isSupabaseConfigured } from '../database';
 import { isStripeConfigured } from '../services/stripe/client';
 import { isResendConfigured } from '../services/email';
-import { isUploadThingConfigured } from '../services/upload';
 
 const router = Router();
 
@@ -106,13 +105,6 @@ router.get('/', (_req: Request, res: Response) => {
  *                               type: string
  *                             configured:
  *                               type: boolean
- *                         storage:
- *                           type: object
- *                           properties:
- *                             status:
- *                               type: string
- *                             configured:
- *                               type: boolean
  *                     timestamp:
  *                       type: string
  *                       format: date-time
@@ -121,7 +113,6 @@ router.get('/status', (_req: Request, res: Response) => {
   const databaseConfigured = isSupabaseConfigured();
   const paymentsConfigured = isStripeConfigured();
   const emailConfigured = isResendConfigured();
-  const storageConfigured = isUploadThingConfigured();
 
   const allConfigured = databaseConfigured && paymentsConfigured;
   const overallStatus = allConfigured ? 'operational' : 'degraded';
@@ -146,10 +137,6 @@ router.get('/status', (_req: Request, res: Response) => {
         email: {
           status: emailConfigured ? 'operational' : 'not_configured',
           configured: emailConfigured,
-        },
-        storage: {
-          status: storageConfigured ? 'operational' : 'not_configured',
-          configured: storageConfigured,
         },
       },
       timestamp: new Date().toISOString(),
