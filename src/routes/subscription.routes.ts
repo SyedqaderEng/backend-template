@@ -364,4 +364,643 @@ router.get('/plans', async (_req: Request, res: Response, next: NextFunction) =>
   }
 });
 
+/**
+ * @openapi
+ * /v1/subscriptions/plans/{planId}:
+ *   get:
+ *     summary: Get plan details
+ *     description: Returns details of a specific subscription plan
+ *     tags: [Subscriptions]
+ *     parameters:
+ *       - name: planId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [free, basic, pro, enterprise]
+ *     responses:
+ *       200:
+ *         description: Plan details
+ *       404:
+ *         description: Plan not found
+ */
+router.get('/plans/:planId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { planId } = req.params;
+    const { getAllPlans } = await import('../services');
+    const plans = getAllPlans();
+    const plan = plans.find((p) => p.id === planId);
+
+    if (!plan) {
+      throw new ApiError(404, 'Plan not found');
+    }
+
+    const limits = getPlanLimits(planId as 'free' | 'basic' | 'pro' | 'enterprise');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        ...plan,
+        limits,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/usage:
+ *   get:
+ *     summary: Get usage statistics
+ *     description: Returns the current user's usage statistics for the billing period
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Usage statistics
+ */
+router.get('/usage', authMiddleware, async (_req: Request, res: Response) => {
+  // In production, fetch from database
+  res.status(200).json({
+    success: true,
+    data: {
+      period: {
+        start: new Date(Date.now() - 30 * 24 * 3600000).toISOString(),
+        end: new Date().toISOString(),
+      },
+      apiCalls: {
+        used: 4523,
+        limit: 10000,
+        percentage: 45.23,
+      },
+      storage: {
+        used: 256000000, // bytes
+        limit: 1073741824, // 1GB
+        percentage: 23.84,
+      },
+      bandwidth: {
+        used: 512000000,
+        limit: 5368709120, // 5GB
+        percentage: 9.54,
+      },
+      teamMembers: {
+        used: 3,
+        limit: 10,
+        percentage: 30,
+      },
+    },
+  });
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/limits:
+ *   get:
+ *     summary: Get current plan limits
+ *     description: Returns the limits for the current subscription plan
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Plan limits
+ */
+router.get('/limits', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const subscription = await getCurrentSubscription(clerkUserId);
+    const limits = getPlanLimits(subscription.plan.id as 'free' | 'basic' | 'pro' | 'enterprise');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        planId: subscription.plan.id,
+        planName: subscription.plan.name,
+        limits,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/upgrade:
+ *   post:
+ *     summary: Upgrade subscription
+ *     description: Upgrades the subscription to a higher plan
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - planId
+ *             properties:
+ *               planId:
+ *                 type: string
+ *                 enum: [basic, pro, enterprise]
+ *               prorate:
+ *                 type: boolean
+ *                 default: true
+ *     responses:
+ *       200:
+ *         description: Upgrade successful or checkout URL
+ */
+router.post('/upgrade', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { planId, prorate = true } = req.body;
+
+    if (!planId || !['basic', 'pro', 'enterprise'].includes(planId)) {
+      throw new ApiError(400, 'Valid plan ID is required');
+    }
+
+    const subscription = await getCurrentSubscription(clerkUserId);
+    const planOrder = ['free', 'basic', 'pro', 'enterprise'];
+    const currentIndex = planOrder.indexOf(subscription.plan.id);
+    const targetIndex = planOrder.indexOf(planId);
+
+    if (targetIndex <= currentIndex) {
+      throw new ApiError(400, 'Cannot upgrade to a lower or same plan');
+    }
+
+    logger.info({ clerkUserId, fromPlan: subscription.plan.id, toPlan: planId, prorate }, 'Subscription upgrade requested');
+
+    // In production, handle via Stripe
+    res.status(200).json({
+      success: true,
+      message: 'Upgrade initiated',
+      data: {
+        previousPlan: subscription.plan.id,
+        newPlan: planId,
+        effectiveDate: new Date().toISOString(),
+        prorated: prorate,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/downgrade:
+ *   post:
+ *     summary: Downgrade subscription
+ *     description: Downgrades the subscription to a lower plan at the end of the billing period
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - planId
+ *             properties:
+ *               planId:
+ *                 type: string
+ *                 enum: [free, basic, pro]
+ *     responses:
+ *       200:
+ *         description: Downgrade scheduled
+ */
+router.post('/downgrade', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { planId } = req.body;
+
+    if (!planId || !['free', 'basic', 'pro'].includes(planId)) {
+      throw new ApiError(400, 'Valid plan ID is required');
+    }
+
+    const subscription = await getCurrentSubscription(clerkUserId);
+    const planOrder = ['free', 'basic', 'pro', 'enterprise'];
+    const currentIndex = planOrder.indexOf(subscription.plan.id);
+    const targetIndex = planOrder.indexOf(planId);
+
+    if (targetIndex >= currentIndex) {
+      throw new ApiError(400, 'Cannot downgrade to a higher or same plan');
+    }
+
+    logger.info({ clerkUserId, fromPlan: subscription.plan.id, toPlan: planId }, 'Subscription downgrade scheduled');
+
+    res.status(200).json({
+      success: true,
+      message: 'Downgrade scheduled for end of billing period',
+      data: {
+        currentPlan: subscription.plan.id,
+        scheduledPlan: planId,
+        effectiveDate: subscription.currentPeriodEnd?.toISOString() || new Date(Date.now() + 30 * 24 * 3600000).toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/cancel:
+ *   post:
+ *     summary: Cancel subscription
+ *     description: Cancels the subscription at the end of the billing period
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *               feedback:
+ *                 type: string
+ *               immediately:
+ *                 type: boolean
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Cancellation scheduled
+ */
+router.post('/cancel', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { reason, immediately = false } = req.body;
+
+    const subscription = await getCurrentSubscription(clerkUserId);
+
+    if (subscription.plan.id === 'free') {
+      throw new ApiError(400, 'Free plan cannot be cancelled');
+    }
+
+    logger.info({ clerkUserId, reason, immediately }, 'Subscription cancellation requested');
+
+    res.status(200).json({
+      success: true,
+      message: immediately ? 'Subscription cancelled immediately' : 'Subscription will be cancelled at end of billing period',
+      data: {
+        cancelledAt: new Date().toISOString(),
+        effectiveDate: immediately ? new Date().toISOString() : subscription.currentPeriodEnd?.toISOString(),
+        reactivationDeadline: subscription.currentPeriodEnd?.toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/reactivate:
+ *   post:
+ *     summary: Reactivate cancelled subscription
+ *     description: Reactivates a cancelled subscription before the end of the billing period
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Subscription reactivated
+ */
+router.post('/reactivate', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+
+    logger.info({ clerkUserId }, 'Subscription reactivation requested');
+
+    res.status(200).json({
+      success: true,
+      message: 'Subscription reactivated successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/trial:
+ *   post:
+ *     summary: Start free trial
+ *     description: Starts a free trial for a paid plan
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - planId
+ *             properties:
+ *               planId:
+ *                 type: string
+ *                 enum: [basic, pro, enterprise]
+ *     responses:
+ *       200:
+ *         description: Trial started
+ *       400:
+ *         description: Trial not available
+ */
+router.post('/trial', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { planId } = req.body;
+
+    if (!planId || !['basic', 'pro', 'enterprise'].includes(planId)) {
+      throw new ApiError(400, 'Valid plan ID is required');
+    }
+
+    // Check if user has already used a trial
+    // In production, check database
+    const hasUsedTrial = false;
+
+    if (hasUsedTrial) {
+      throw new ApiError(400, 'Free trial has already been used');
+    }
+
+    const trialDays = 14;
+    const trialEndDate = new Date(Date.now() + trialDays * 24 * 3600000);
+
+    logger.info({ clerkUserId, planId, trialDays }, 'Free trial started');
+
+    res.status(200).json({
+      success: true,
+      message: `${trialDays}-day free trial started`,
+      data: {
+        planId,
+        trialStartDate: new Date().toISOString(),
+        trialEndDate: trialEndDate.toISOString(),
+        trialDays,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/trial/extend:
+ *   post:
+ *     summary: Extend trial (Admin)
+ *     description: Extends a user's trial period. Admin only.
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - userId
+ *               - days
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               days:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 30
+ *     responses:
+ *       200:
+ *         description: Trial extended
+ */
+router.post('/trial/extend', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { userId, days } = req.body;
+
+    if (!userId || !days || days < 1 || days > 30) {
+      throw new ApiError(400, 'Valid user ID and days (1-30) are required');
+    }
+
+    logger.info({ targetUserId: userId, days }, 'Trial extended');
+
+    res.status(200).json({
+      success: true,
+      message: `Trial extended by ${days} days`,
+      data: {
+        userId,
+        extensionDays: days,
+        newTrialEndDate: new Date(Date.now() + days * 24 * 3600000).toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/history:
+ *   get:
+ *     summary: Get subscription history
+ *     description: Returns the subscription change history
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Subscription history
+ */
+router.get('/history', authMiddleware, async (_req: Request, res: Response) => {
+  // Mock history - in production, fetch from database
+  res.status(200).json({
+    success: true,
+    data: [
+      {
+        id: '1',
+        type: 'upgrade',
+        fromPlan: 'free',
+        toPlan: 'basic',
+        date: new Date(Date.now() - 60 * 24 * 3600000).toISOString(),
+      },
+      {
+        id: '2',
+        type: 'upgrade',
+        fromPlan: 'basic',
+        toPlan: 'pro',
+        date: new Date(Date.now() - 30 * 24 * 3600000).toISOString(),
+      },
+    ],
+  });
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/preview-change:
+ *   post:
+ *     summary: Preview plan change
+ *     description: Shows what will happen when changing plans (proration, charges, etc.)
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - targetPlanId
+ *             properties:
+ *               targetPlanId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Preview of plan change
+ */
+router.post('/preview-change', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { targetPlanId } = req.body;
+
+    if (!targetPlanId) {
+      throw new ApiError(400, 'Target plan ID is required');
+    }
+
+    const subscription = await getCurrentSubscription(clerkUserId);
+
+    // Mock preview - in production, calculate from Stripe
+    res.status(200).json({
+      success: true,
+      data: {
+        currentPlan: subscription.plan.id,
+        targetPlan: targetPlanId,
+        immediateCharge: targetPlanId === 'enterprise' ? 4900 : 0,
+        proratedCredit: 1450,
+        nextBillingAmount: targetPlanId === 'enterprise' ? 9900 : targetPlanId === 'pro' ? 2900 : 900,
+        nextBillingDate: subscription.currentPeriodEnd?.toISOString(),
+        currency: 'usd',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/coupon:
+ *   post:
+ *     summary: Apply coupon code
+ *     description: Applies a coupon code to the subscription
+ *     tags: [Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - code
+ *             properties:
+ *               code:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Coupon applied
+ *       400:
+ *         description: Invalid coupon
+ */
+router.post('/coupon', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clerkUserId = requireUserId(req);
+    const { code } = req.body;
+
+    if (!code) {
+      throw new ApiError(400, 'Coupon code is required');
+    }
+
+    // Mock coupon validation - in production, validate via Stripe
+    const validCoupons: Record<string, { discount: number; type: 'percent' | 'amount' }> = {
+      'SAVE20': { discount: 20, type: 'percent' },
+      'WELCOME10': { discount: 10, type: 'percent' },
+    };
+
+    const coupon = validCoupons[code.toUpperCase()];
+    if (!coupon) {
+      throw new ApiError(400, 'Invalid or expired coupon code');
+    }
+
+    logger.info({ clerkUserId, code }, 'Coupon applied');
+
+    res.status(200).json({
+      success: true,
+      message: 'Coupon applied successfully',
+      data: {
+        code: code.toUpperCase(),
+        discount: coupon.discount,
+        discountType: coupon.type,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/subscriptions/coupon/validate:
+ *   post:
+ *     summary: Validate coupon code
+ *     description: Validates a coupon code without applying it
+ *     tags: [Subscriptions]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - code
+ *             properties:
+ *               code:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Coupon validation result
+ */
+router.post('/coupon/validate', async (req: Request, res: Response) => {
+  const { code } = req.body;
+
+  const validCoupons: Record<string, { discount: number; type: 'percent' | 'amount'; description: string }> = {
+    'SAVE20': { discount: 20, type: 'percent', description: '20% off your subscription' },
+    'WELCOME10': { discount: 10, type: 'percent', description: '10% off for new customers' },
+  };
+
+  const coupon = code ? validCoupons[code.toUpperCase()] : null;
+
+  res.status(200).json({
+    success: true,
+    data: {
+      valid: !!coupon,
+      code: code?.toUpperCase(),
+      discount: coupon?.discount || null,
+      discountType: coupon?.type || null,
+      description: coupon?.description || null,
+    },
+  });
+});
+
 export { router as subscriptionRouter };

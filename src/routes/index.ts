@@ -20,6 +20,8 @@ import { settingsRouter } from './settings.routes';
 import { teamsRouter } from './teams.routes';
 import { adminRouter } from './admin.routes';
 import { legalRouter } from './legal.routes';
+import { webhooksManagementRouter } from './webhooks-management.routes';
+import { supportRouter } from './support.routes';
 
 const router = Router();
 
@@ -78,5 +80,11 @@ router.use('/v1/admin', adminRouter);
 
 // API v1 routes - Legal
 router.use('/v1/legal', legalRouter);
+
+// API v1 routes - Webhook Management
+router.use('/v1/webhooks', webhooksManagementRouter);
+
+// API v1 routes - Support & Errors
+router.use('/v1/support', supportRouter);
 
 export { router as apiRouter };

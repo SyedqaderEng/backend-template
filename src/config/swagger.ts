@@ -490,6 +490,14 @@ Authorization: Bearer <your-jwt-token>
       name: 'Legal',
       description: 'Legal documents and GDPR compliance',
     },
+    {
+      name: 'Webhook Management',
+      description: 'Manage outgoing webhook endpoints',
+    },
+    {
+      name: 'Support',
+      description: 'Support tickets and error reporting',
+    },
   ],
 };
 
