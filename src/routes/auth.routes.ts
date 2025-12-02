@@ -1,13 +1,542 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { verifyToken } from '@clerk/backend';
+import { verifyToken, createClerkClient } from '@clerk/backend';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { ApiError } from '../middleware/errorHandler.middleware';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware';
 import { logger } from '../utils/logger';
-import { sessionsRepository } from '../database';
+import { sessionsRepository, settingsRepository } from '../database';
 
 const router = Router();
+
+// Initialize Clerk client for backend operations
+const clerkClient = env.CLERK_SECRET_KEY
+  ? createClerkClient({ secretKey: env.CLERK_SECRET_KEY })
+  : null;
+
+/**
+ * Signup request schema
+ */
+const signupSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  firstName: z.string().min(1, 'First name is required').optional(),
+  lastName: z.string().min(1, 'Last name is required').optional(),
+});
+
+/**
+ * Login request schema
+ */
+const loginSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+/**
+ * @openapi
+ * /v1/auth/signup:
+ *   post:
+ *     summary: Register a new user
+ *     description: Creates a new user account with email and password
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "user@example.com"
+ *               password:
+ *                 type: string
+ *                 minLength: 8
+ *                 example: "SecurePass123!"
+ *               firstName:
+ *                 type: string
+ *                 example: "John"
+ *               lastName:
+ *                 type: string
+ *                 example: "Doe"
+ *     responses:
+ *       201:
+ *         description: User created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "User created successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                         firstName:
+ *                           type: string
+ *                         lastName:
+ *                           type: string
+ *                         createdAt:
+ *                           type: string
+ *       400:
+ *         description: Validation error or user already exists
+ *       503:
+ *         description: Auth service not configured
+ */
+router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    // Validate input
+    const validationResult = signupSchema.safeParse(req.body);
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      throw new ApiError(400, 'Validation failed', errors);
+    }
+
+    const { email, password, firstName, lastName } = validationResult.data;
+
+    // Create user in Clerk
+    const user = await clerkClient.users.createUser({
+      emailAddress: [email],
+      password,
+      firstName: firstName || undefined,
+      lastName: lastName || undefined,
+    });
+
+    logger.info({ userId: user.id, email }, 'User created successfully');
+
+    // Create default settings for the user
+    await settingsRepository.getOrCreate(user.id);
+
+    // Create initial session
+    const { session, token } = await sessionsRepository.createSession(user.id, {
+      deviceInfo: {
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      },
+      ipAddress: req.ip || undefined,
+      expiresInDays: 7,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      data: {
+        user: {
+          id: user.id,
+          email: user.emailAddresses[0]?.emailAddress,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          createdAt: new Date(user.createdAt).toISOString(),
+        },
+        session: {
+          id: session.id,
+          token,
+          expiresAt: session.expires_at,
+        },
+      },
+    });
+  } catch (error) {
+    // Handle Clerk-specific errors
+    const err = error as Error & { errors?: Array<{ message: string; code: string }> };
+    if (err.errors && Array.isArray(err.errors)) {
+      const clerkError = err.errors[0];
+      if (clerkError?.code === 'form_identifier_exists') {
+        return next(new ApiError(400, 'An account with this email already exists'));
+      }
+      if (clerkError?.code === 'form_password_pwned') {
+        return next(new ApiError(400, 'This password has been compromised. Please choose a different one.'));
+      }
+      return next(new ApiError(400, clerkError?.message || 'Registration failed'));
+    }
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/auth/login:
+ *   post:
+ *     summary: Login with email and password
+ *     description: Authenticates a user and returns session tokens
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "user@example.com"
+ *               password:
+ *                 type: string
+ *                 example: "SecurePass123!"
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Login successful"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                     session:
+ *                       type: object
+ *       401:
+ *         description: Invalid credentials
+ *       503:
+ *         description: Auth service not configured
+ */
+router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    // Validate input
+    const validationResult = loginSchema.safeParse(req.body);
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      throw new ApiError(400, 'Validation failed', errors);
+    }
+
+    const { email, password } = validationResult.data;
+
+    // Find user by email
+    const users = await clerkClient.users.getUserList({
+      emailAddress: [email],
+    });
+
+    if (users.data.length === 0) {
+      throw new ApiError(401, 'Invalid email or password');
+    }
+
+    const user = users.data[0];
+
+    // Verify password using Clerk's verification
+    try {
+      await clerkClient.users.verifyPassword({
+        userId: user.id,
+        password,
+      });
+    } catch {
+      throw new ApiError(401, 'Invalid email or password');
+    }
+
+    logger.info({ userId: user.id, email }, 'User logged in successfully');
+
+    // Create session
+    const { session, token } = await sessionsRepository.createSession(user.id, {
+      deviceInfo: {
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      },
+      ipAddress: req.ip || undefined,
+      expiresInDays: 7,
+    });
+
+    // Create refresh token
+    const refreshTokenData = await sessionsRepository.createRefreshToken(user.id, {
+      deviceInfo: {
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      },
+      ipAddress: req.ip || undefined,
+      expiresInDays: 30,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        user: {
+          id: user.id,
+          email: user.emailAddresses[0]?.emailAddress,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          emailVerified: user.emailAddresses[0]?.verification?.status === 'verified',
+          createdAt: new Date(user.createdAt).toISOString(),
+          lastSignInAt: user.lastSignInAt ? new Date(user.lastSignInAt).toISOString() : null,
+        },
+        session: {
+          id: session.id,
+          accessToken: token,
+          refreshToken: refreshTokenData.token,
+          expiresAt: session.expires_at,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * User update request schema
+ */
+const updateUserSchema = z.object({
+  firstName: z.string().min(1).optional(),
+  lastName: z.string().min(1).optional(),
+  username: z.string().min(3).optional(),
+});
+
+/**
+ * @openapi
+ * /v1/auth/user:
+ *   put:
+ *     summary: Update user profile
+ *     description: Updates the current user's profile information via Clerk
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               firstName:
+ *                 type: string
+ *                 example: "John"
+ *               lastName:
+ *                 type: string
+ *                 example: "Doe"
+ *               username:
+ *                 type: string
+ *                 example: "johndoe"
+ *     responses:
+ *       200:
+ *         description: User profile updated successfully
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ *       503:
+ *         description: Auth service not configured
+ */
+router.put('/user', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    const userId = req.auth?.userId;
+    if (!userId) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    // Validate input
+    const validationResult = updateUserSchema.safeParse(req.body);
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      throw new ApiError(400, 'Validation failed', errors);
+    }
+
+    const { firstName, lastName, username } = validationResult.data;
+
+    // Update user in Clerk
+    const updatedUser = await clerkClient.users.updateUser(userId, {
+      firstName: firstName || undefined,
+      lastName: lastName || undefined,
+      username: username || undefined,
+    });
+
+    logger.info({ userId }, 'User profile updated');
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: {
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.emailAddresses[0]?.emailAddress,
+          firstName: updatedUser.firstName,
+          lastName: updatedUser.lastName,
+          username: updatedUser.username,
+          updatedAt: new Date(updatedUser.updatedAt).toISOString(),
+        },
+      },
+    });
+  } catch (error) {
+    // Handle Clerk-specific errors
+    const err = error as Error & { errors?: Array<{ message: string; code: string }> };
+    if (err.errors && Array.isArray(err.errors)) {
+      const clerkError = err.errors[0];
+      if (clerkError?.code === 'form_identifier_exists') {
+        return next(new ApiError(400, 'Username already taken'));
+      }
+      return next(new ApiError(400, clerkError?.message || 'Update failed'));
+    }
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/auth/user:
+ *   get:
+ *     summary: Get full user profile
+ *     description: Returns the full user profile from Clerk
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User profile
+ *       401:
+ *         description: Unauthorized
+ *       503:
+ *         description: Auth service not configured
+ */
+router.get('/user', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    const userId = req.auth?.userId;
+    if (!userId) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    // Get user from Clerk
+    const user = await clerkClient.users.getUser(userId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          email: user.emailAddresses[0]?.emailAddress,
+          emailVerified: user.emailAddresses[0]?.verification?.status === 'verified',
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+          imageUrl: user.imageUrl,
+          createdAt: new Date(user.createdAt).toISOString(),
+          updatedAt: new Date(user.updatedAt).toISOString(),
+          lastSignInAt: user.lastSignInAt ? new Date(user.lastSignInAt).toISOString() : null,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
+ * /v1/auth/account:
+ *   delete:
+ *     summary: Delete user account
+ *     description: Permanently deletes the user account from Clerk and all associated data
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - password
+ *             properties:
+ *               password:
+ *                 type: string
+ *                 description: Current password for verification
+ *     responses:
+ *       200:
+ *         description: Account deleted successfully
+ *       401:
+ *         description: Invalid password or unauthorized
+ *       503:
+ *         description: Auth service not configured
+ */
+router.delete('/account', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    const userId = req.auth?.userId;
+    if (!userId) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    const { password } = req.body;
+    if (!password) {
+      throw new ApiError(400, 'Password is required for account deletion');
+    }
+
+    // Verify password before deletion
+    try {
+      await clerkClient.users.verifyPassword({
+        userId,
+        password,
+      });
+    } catch {
+      throw new ApiError(401, 'Invalid password');
+    }
+
+    // Delete all user sessions from our database first
+    await sessionsRepository.deleteAllUserSessions(userId);
+    await sessionsRepository.revokeAllUserRefreshTokens(userId);
+
+    // Delete user from Clerk
+    await clerkClient.users.deleteUser(userId);
+
+    logger.info({ userId }, 'User account deleted');
+
+    res.status(200).json({
+      success: true,
+      message: 'Account deleted successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * Token verification request schema
@@ -574,6 +1103,15 @@ router.post('/password/reset', async (req: Request, res: Response, next: NextFun
  */
 router.post('/password/change', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!clerkClient) {
+      throw new ApiError(503, 'Authentication service is not configured');
+    }
+
+    const userId = req.auth?.userId;
+    if (!userId) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) {
       throw new ApiError(400, 'Current and new password are required');
@@ -582,13 +1120,37 @@ router.post('/password/change', authMiddleware, async (req: Request, res: Respon
       throw new ApiError(400, 'New password must be at least 8 characters');
     }
 
-    logger.info({ userId: req.auth?.userId }, 'Password changed');
+    // Verify current password
+    try {
+      await clerkClient.users.verifyPassword({
+        userId,
+        password: currentPassword,
+      });
+    } catch {
+      throw new ApiError(401, 'Current password is incorrect');
+    }
+
+    // Update password in Clerk
+    await clerkClient.users.updateUser(userId, {
+      password: newPassword,
+    });
+
+    logger.info({ userId }, 'Password changed');
 
     res.status(200).json({
       success: true,
       message: 'Password changed successfully',
     });
   } catch (error) {
+    // Handle Clerk-specific errors
+    const err = error as Error & { errors?: Array<{ message: string; code: string }> };
+    if (err.errors && Array.isArray(err.errors)) {
+      const clerkError = err.errors[0];
+      if (clerkError?.code === 'form_password_pwned') {
+        return next(new ApiError(400, 'This password has been compromised. Please choose a different one.'));
+      }
+      return next(new ApiError(400, clerkError?.message || 'Password change failed'));
+    }
     next(error);
   }
 });

@@ -1,14 +1,17 @@
 /**
- * REAL END-TO-END API TESTING
+ * REAL END-TO-END API AUTHENTICATION TESTING
  *
- * Tests authentication flows with REAL Clerk users and REAL data
+ * Tests the complete authentication flow using API ENDPOINTS
+ * All endpoints call Clerk behind the scenes
  *
  * This script:
- * 1. Creates a REAL test user in Clerk
- * 2. Gets REAL authentication tokens
- * 3. Tests ALL endpoints with proper authentication
- * 4. Shows REAL data being created/updated
- * 5. Cleans up after tests
+ * 1. Signs up a new user via API (which calls Clerk behind the scenes)
+ * 2. Logs in via API and gets session tokens
+ * 3. Gets user profile via API (which fetches from Clerk)
+ * 4. Updates user profile via API (which updates in Clerk)
+ * 5. Changes password via API (which updates in Clerk)
+ * 6. Logs in again with new password
+ * 7. Deletes account via API (which deletes from Clerk)
  *
  * Run with: npx ts-node scripts/e2e-auth-test.ts
  */
@@ -16,10 +19,8 @@
 import { config } from 'dotenv';
 config();
 
-import { createClerkClient } from '@clerk/backend';
-
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
-const API_BASE = `${BASE_URL}/api`;
+const API_BASE = `${BASE_URL}/api/v1`;
 
 // Colors for output
 const c = {
@@ -30,7 +31,8 @@ const c = {
   blue: '\x1b[34m',
   cyan: '\x1b[36m',
   red: '\x1b[31m',
-  gray: '\x1b[90m'
+  gray: '\x1b[90m',
+  magenta: '\x1b[35m'
 };
 
 function log(msg: string, color = c.reset) {
@@ -47,7 +49,7 @@ function logData(label: string, data: unknown) {
   log(`\n  ${label}:`, c.blue);
   if (typeof data === 'object' && data !== null) {
     const lines = JSON.stringify(data, null, 2).split('\n');
-    lines.forEach(line => console.log(`    ${line}`));
+    lines.forEach(line => console.log(`    ${c.gray}${line}${c.reset}`));
   } else {
     console.log(`    ${data}`);
   }
@@ -61,23 +63,29 @@ function logError(msg: string) {
   log(`  ✗ ${msg}`, c.red);
 }
 
-// Initialize Clerk
-const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
+function logRequest(method: string, path: string) {
+  log(`\n  → ${method} ${path}`, c.yellow);
+}
 
-// Test user data
-const TEST_EMAIL = `test_${Date.now()}@test-e2e.com`;
-const TEST_PASSWORD = 'TestPassword123!';
-const TEST_FIRST_NAME = 'TestUser';
-const TEST_LAST_NAME = 'E2E';
+// Test user data - unique for each run
+const timestamp = Date.now();
+const TEST_EMAIL = `e2etest_${timestamp}@testmail.com`;
+const TEST_PASSWORD = 'SecureTestPass123!';
+const NEW_PASSWORD = 'NewSecurePass456!';
+const TEST_FIRST_NAME = 'E2ETest';
+const TEST_LAST_NAME = 'User';
 
-// Store created resources
-let testUserId: string | null = null;
+// Store state during test
 let accessToken: string | null = null;
+let refreshToken: string | null = null;
+let userId: string | null = null;
+let passed = 0;
+let failed = 0;
 
 interface ApiResponse {
   success: boolean;
-  data?: unknown;
   message?: string;
+  data?: Record<string, unknown>;
 }
 
 async function apiCall(
@@ -100,8 +108,13 @@ async function apiCall(
     headers
   };
 
-  if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
+  if (body && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     options.body = JSON.stringify(body);
+  }
+
+  logRequest(method, path);
+  if (body) {
+    logData('Request Body', body);
   }
 
   const response = await fetch(url, options);
@@ -114,397 +127,383 @@ async function apiCall(
     data = { success: false, message: 'Invalid JSON response' };
   }
 
+  logData('Response', { status: response.status, ...data });
   return { status: response.status, data };
+}
+
+async function test(name: string, fn: () => Promise<boolean>): Promise<boolean> {
+  try {
+    const result = await fn();
+    if (result) {
+      logSuccess(name);
+      passed++;
+      return true;
+    } else {
+      logError(name);
+      failed++;
+      return false;
+    }
+  } catch (error) {
+    const err = error as Error;
+    logError(`${name}: ${err.message}`);
+    failed++;
+    return false;
+  }
 }
 
 async function runTests() {
   console.log('\n');
-  log('╔══════════════════════════════════════════════════════════════════════╗', c.bright);
-  log('║           REAL END-TO-END AUTHENTICATION TESTING                     ║', c.bright);
-  log('╚══════════════════════════════════════════════════════════════════════╝', c.bright);
+  log('╔══════════════════════════════════════════════════════════════════════╗', c.bright + c.magenta);
+  log('║       REAL E2E AUTHENTICATION API TESTING                            ║', c.bright + c.magenta);
+  log('║       Using API endpoints that call Clerk behind the scenes          ║', c.bright + c.magenta);
+  log('╚══════════════════════════════════════════════════════════════════════╝', c.bright + c.magenta);
 
-  log(`\nBase URL: ${BASE_URL}`, c.cyan);
+  log(`\nAPI Base URL: ${API_BASE}`, c.cyan);
+  log(`Test Email: ${TEST_EMAIL}`, c.cyan);
   log(`Timestamp: ${new Date().toISOString()}`, c.cyan);
 
-  try {
-    // ================================================================
-    // STEP 1: CREATE REAL USER IN CLERK
-    // ================================================================
-    logSection('STEP 1: CREATE REAL USER IN CLERK');
+  // ================================================================
+  // STEP 1: SIGN UP NEW USER VIA API
+  // ================================================================
+  logSection('STEP 1: SIGN UP NEW USER');
+  log('  Calling POST /auth/signup - This calls Clerk.createUser behind the scenes', c.gray);
 
-    logData('Creating User with', {
+  const signupSuccess = await test('User signup via API', async () => {
+    const res = await apiCall('POST', '/auth/signup', {
       email: TEST_EMAIL,
       password: TEST_PASSWORD,
       firstName: TEST_FIRST_NAME,
       lastName: TEST_LAST_NAME
     });
 
-    try {
-      const user = await clerkClient.users.createUser({
-        emailAddress: [TEST_EMAIL],
-        password: TEST_PASSWORD,
-        firstName: TEST_FIRST_NAME,
-        lastName: TEST_LAST_NAME
-      });
+    if (res.status === 201 && res.data.success) {
+      const userData = res.data.data as {
+        user?: { id?: string; email?: string; firstName?: string; lastName?: string };
+        session?: { token?: string; id?: string };
+      };
 
-      testUserId = user.id;
-      logSuccess('User created in Clerk!');
-      logData('Created User', {
-        id: user.id,
-        email: user.emailAddresses[0]?.emailAddress,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        createdAt: user.createdAt
-      });
-    } catch (error) {
-      const err = error as Error;
-      logError(`Failed to create user: ${err.message}`);
-      throw error;
+      userId = userData.user?.id || null;
+      accessToken = userData.session?.token || null;
+
+      log(`\n  📧 User created: ${userData.user?.email}`, c.green);
+      log(`  🆔 User ID: ${userId}`, c.green);
+      log(`  🔑 Session token received`, c.green);
+
+      return true;
     }
+    return false;
+  });
 
-    // ================================================================
-    // STEP 2: GET CLERK SESSION TOKEN
-    // ================================================================
-    logSection('STEP 2: GET AUTHENTICATION TOKEN');
-
-    // Note: Clerk sessions are created via frontend SDK
-    // For backend testing, we use the user ID directly
-    accessToken = `test_token_${testUserId}`;
-
-    logData('Authentication Info', {
-      userId: testUserId,
-      note: 'Backend tests use user ID - frontend uses JWT tokens'
-    });
-    logSuccess('Authentication ready');
-
-    // ================================================================
-    // STEP 3: TEST AUTH ENDPOINTS
-    // ================================================================
-    logSection('STEP 3: TEST AUTHENTICATION ENDPOINTS');
-
-    // Test: Get Session Info (no auth required)
-    log('\n  Testing: GET /v1/auth/session (no auth)', c.yellow);
-    const sessionRes = await apiCall('GET', '/v1/auth/session');
-    logData('Response', {
-      status: sessionRes.status,
-      authenticated: (sessionRes.data as { data?: { authenticated?: boolean } })?.data?.authenticated
-    });
-    if (sessionRes.status === 200) {
-      logSuccess('Session endpoint works');
-    } else {
-      logError(`Session endpoint failed: ${sessionRes.status}`);
-    }
-
-    // Test: Request Password Reset (no auth required)
-    log('\n  Testing: POST /v1/auth/password/reset-request', c.yellow);
-    const resetReqRes = await apiCall('POST', '/v1/auth/password/reset-request', {
-      email: TEST_EMAIL
-    });
-    logData('Response', {
-      status: resetReqRes.status,
-      message: resetReqRes.data.message
-    });
-    if (resetReqRes.status === 200) {
-      logSuccess('Password reset request works');
-    } else {
-      logError(`Password reset request failed: ${resetReqRes.status}`);
-    }
-
-    // Test: Reset Password with Token (no auth required)
-    log('\n  Testing: POST /v1/auth/password/reset', c.yellow);
-    const resetRes = await apiCall('POST', '/v1/auth/password/reset', {
-      token: 'test_reset_token_12345',
-      newPassword: 'NewPassword456!'
-    });
-    logData('Response', {
-      status: resetRes.status,
-      message: resetRes.data.message
-    });
-    if (resetRes.status === 200) {
-      logSuccess('Password reset works');
-    } else {
-      logError(`Password reset failed: ${resetRes.status}`);
-    }
-
-    // Test: Verify Email Token (no auth required)
-    log('\n  Testing: POST /v1/auth/email/verify', c.yellow);
-    const verifyEmailRes = await apiCall('POST', '/v1/auth/email/verify', {
-      token: 'test_verification_token'
-    });
-    logData('Response', {
-      status: verifyEmailRes.status,
-      message: verifyEmailRes.data.message
-    });
-    if (verifyEmailRes.status === 200) {
-      logSuccess('Email verification works');
-    } else {
-      logError(`Email verification failed: ${verifyEmailRes.status}`);
-    }
-
-    // Test: 2FA Verify (no auth required)
-    log('\n  Testing: POST /v1/auth/2fa/verify', c.yellow);
-    const verify2faRes = await apiCall('POST', '/v1/auth/2fa/verify', {
-      userId: testUserId,
-      code: '123456'
-    });
-    logData('Response', {
-      status: verify2faRes.status,
-      hasAccessToken: !!(verify2faRes.data as { data?: { accessToken?: string } })?.data?.accessToken
-    });
-    if (verify2faRes.status === 200) {
-      logSuccess('2FA verify works');
-    } else {
-      logError(`2FA verify failed: ${verify2faRes.status}`);
-    }
-
-    // Test: 2FA Backup Code (no auth required)
-    log('\n  Testing: POST /v1/auth/2fa/backup', c.yellow);
-    const backupRes = await apiCall('POST', '/v1/auth/2fa/backup', {
-      userId: testUserId,
-      backupCode: '12345678'
-    });
-    logData('Response', {
-      status: backupRes.status,
-      hasAccessToken: !!(backupRes.data as { data?: { accessToken?: string } })?.data?.accessToken
-    });
-    if (backupRes.status === 200) {
-      logSuccess('Backup code authentication works');
-    } else {
-      logError(`Backup code auth failed: ${backupRes.status}`);
-    }
-
-    // ================================================================
-    // STEP 4: GET USER DETAILS FROM CLERK
-    // ================================================================
-    logSection('STEP 4: VERIFY USER IN CLERK');
-
-    const verifyUser = await clerkClient.users.getUser(testUserId!);
-    logData('User Details from Clerk', {
-      id: verifyUser.id,
-      email: verifyUser.emailAddresses[0]?.emailAddress,
-      firstName: verifyUser.firstName,
-      lastName: verifyUser.lastName,
-      createdAt: new Date(verifyUser.createdAt).toISOString(),
-      lastSignInAt: verifyUser.lastSignInAt ? new Date(verifyUser.lastSignInAt).toISOString() : null,
-      emailVerified: verifyUser.emailAddresses[0]?.verification?.status
-    });
-    logSuccess('User exists in Clerk database');
-
-    // ================================================================
-    // STEP 5: UPDATE USER IN CLERK
-    // ================================================================
-    logSection('STEP 5: UPDATE USER PROFILE');
-
-    logData('Updating user with', {
-      firstName: 'UpdatedFirst',
-      lastName: 'UpdatedLast'
-    });
-
-    const updatedUser = await clerkClient.users.updateUser(testUserId!, {
-      firstName: 'UpdatedFirst',
-      lastName: 'UpdatedLast'
-    });
-
-    logSuccess('User updated in Clerk');
-    logData('Updated User', {
-      id: updatedUser.id,
-      firstName: updatedUser.firstName,
-      lastName: updatedUser.lastName,
-      updatedAt: new Date(updatedUser.updatedAt).toISOString()
-    });
-
-    // ================================================================
-    // STEP 6: TEST DATABASE OPERATIONS WITH USER ID
-    // ================================================================
-    logSection('STEP 6: TEST DATABASE OPERATIONS FOR USER');
-
-    // Import repositories
-    const { getSupabaseAdmin } = await import('../src/database/supabase');
-    const { settingsRepository } = await import('../src/database/repositories/settings.repository');
-    const { notificationsRepository } = await import('../src/database/repositories/notifications.repository');
-    const { logsRepository } = await import('../src/database/repositories/logs.repository');
-    const { legalRepository } = await import('../src/database/repositories/legal.repository');
-    const { sessionsRepository } = await import('../src/database/repositories/sessions.repository');
-
-    // Test: Create user settings
-    log('\n  Creating user settings in database...', c.yellow);
-    const settings = await settingsRepository.getOrCreate(testUserId!);
-    logData('Created Settings', settings);
-    logSuccess('User settings created');
-
-    // Test: Update user settings
-    log('\n  Updating user settings...', c.yellow);
-    const updatedSettings = await settingsRepository.update(testUserId!, {
-      theme: 'dark',
-      language: 'en',
-      timezone: 'America/New_York',
-      email_notifications: true,
-      push_notifications: false
-    });
-    logData('Updated Settings', updatedSettings);
-    logSuccess('User settings updated');
-
-    // Test: Create session in database
-    log('\n  Creating session in database...', c.yellow);
-    const { session, token } = await sessionsRepository.createSession(testUserId!, {
-      deviceInfo: { browser: 'Chrome', os: 'Windows 11' },
-      ipAddress: '192.168.1.1',
-      userAgent: 'Mozilla/5.0 E2E Test',
-      expiresInDays: 7
-    });
-    logData('Created Session', {
-      id: session.id,
-      token: token.substring(0, 20) + '...',
-      expiresAt: session.expires_at
-    });
-    logSuccess('Database session created');
-
-    // Test: Create notifications
-    log('\n  Creating notifications for user...', c.yellow);
-    const notifications = [
-      { type: 'info' as const, title: 'Welcome!', message: 'Your account has been created successfully.' },
-      { type: 'success' as const, title: 'Email Verified', message: 'Your email has been verified.' }
-    ];
-
-    for (const notif of notifications) {
-      const created = await notificationsRepository.create({
-        user_id: testUserId!,
-        ...notif
-      });
-      logData(`Created ${notif.type} notification`, {
-        id: created.id,
-        title: created.title
-      });
-    }
-    logSuccess('Notifications created');
-
-    // Test: Get unread count
-    const unreadCount = await notificationsRepository.getUnreadCount(testUserId!);
-    logData('Unread Notifications', unreadCount);
-
-    // Test: Create activity log
-    log('\n  Recording activity log...', c.yellow);
-    const activityLog = await logsRepository.create({
-      user_id: testUserId!,
-      action: 'user.signup',
-      resource: 'auth',
-      details: { method: 'email', email: TEST_EMAIL },
-      ip_address: '192.168.1.1',
-      user_agent: 'E2E Test Script'
-    });
-    logData('Activity Log', {
-      id: activityLog.id,
-      action: activityLog.action,
-      resource: activityLog.resource
-    });
-    logSuccess('Activity logged');
-
-    // Test: Accept legal terms
-    log('\n  Accepting legal terms...', c.yellow);
-    const consent = await legalRepository.acceptTerms(testUserId!, '1.0.0', '1.0.0');
-    logData('Legal Consent', {
-      termsVersion: consent.terms_version,
-      termsAcceptedAt: consent.terms_accepted_at,
-      privacyVersion: consent.privacy_version
-    });
-    logSuccess('Legal terms accepted');
-
-    // ================================================================
-    // STEP 7: CLEANUP
-    // ================================================================
-    logSection('STEP 7: CLEANUP');
-
-    // Delete from database
-    log('\n  Cleaning up database records...', c.yellow);
-    await sessionsRepository.deleteAllUserSessions(testUserId!);
-    logSuccess('Sessions deleted');
-
-    await settingsRepository.delete(testUserId!);
-    logSuccess('Settings deleted');
-
-    // Get and delete notifications
-    const userNotifs = await notificationsRepository.findByUserId(testUserId!);
-    for (const n of userNotifs) {
-      await notificationsRepository.delete(n.id, testUserId!);
-    }
-    logSuccess(`${userNotifs.length} notifications deleted`);
-
-    // Delete user from Clerk
-    log('\n  Deleting user from Clerk...', c.yellow);
-    await clerkClient.users.deleteUser(testUserId!);
-    logSuccess('User deleted from Clerk');
-
-    // ================================================================
-    // SUMMARY
-    // ================================================================
-    console.log('\n\n');
-    log('╔══════════════════════════════════════════════════════════════════════╗', c.bright + c.green);
-    log('║                    ALL E2E TESTS COMPLETED!                          ║', c.bright + c.green);
-    log('╚══════════════════════════════════════════════════════════════════════╝', c.bright + c.green);
-
-    logData('\nTest Summary', {
-      'User Created': `✓ ${TEST_EMAIL}`,
-      'User Updated': '✓ Name changed',
-      'Session Created': '✓ In database',
-      'Settings Created': '✓ Theme: dark, Language: en',
-      'Notifications': '✓ 2 created',
-      'Activity Logged': '✓ user.signup',
-      'Legal Consent': '✓ Terms accepted',
-      'Password Reset': '✓ Endpoint works',
-      'Email Verify': '✓ Endpoint works',
-      '2FA': '✓ Verify and backup work',
-      'Cleanup': '✓ All data deleted'
-    });
-
-    console.log('\n');
-
-  } catch (error) {
-    const err = error as Error;
-    logError(`Fatal error: ${err.message}`);
-    console.error(err);
-
-    // Cleanup on error
-    if (testUserId) {
-      log('\n  Cleaning up after error...', c.yellow);
-      try {
-        await clerkClient.users.deleteUser(testUserId);
-        logSuccess('Test user deleted');
-      } catch {
-        log('  Could not delete test user', c.gray);
-      }
-    }
-
-    process.exit(1);
+  if (!signupSuccess) {
+    log('\n  ❌ Signup failed - cannot continue tests', c.red);
+    return;
   }
+
+  // ================================================================
+  // STEP 2: GET USER PROFILE VIA API
+  // ================================================================
+  logSection('STEP 2: GET USER PROFILE');
+  log('  Calling GET /auth/user - This calls Clerk.getUser behind the scenes', c.gray);
+
+  await test('Get user profile via API', async () => {
+    const res = await apiCall('GET', '/auth/user', undefined, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      const userData = res.data.data as {
+        user?: { email?: string; firstName?: string; lastName?: string; createdAt?: string };
+      };
+
+      log(`\n  👤 Profile Retrieved:`, c.green);
+      log(`     Email: ${userData.user?.email}`, c.green);
+      log(`     Name: ${userData.user?.firstName} ${userData.user?.lastName}`, c.green);
+      log(`     Created: ${userData.user?.createdAt}`, c.green);
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 3: UPDATE USER PROFILE VIA API
+  // ================================================================
+  logSection('STEP 3: UPDATE USER PROFILE');
+  log('  Calling PUT /auth/user - This calls Clerk.updateUser behind the scenes', c.gray);
+
+  await test('Update user profile via API', async () => {
+    const res = await apiCall('PUT', '/auth/user', {
+      firstName: 'UpdatedFirst',
+      lastName: 'UpdatedLast'
+    }, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      const userData = res.data.data as {
+        user?: { firstName?: string; lastName?: string; updatedAt?: string };
+      };
+
+      log(`\n  ✏️ Profile Updated:`, c.green);
+      log(`     New Name: ${userData.user?.firstName} ${userData.user?.lastName}`, c.green);
+      log(`     Updated At: ${userData.user?.updatedAt}`, c.green);
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 4: VERIFY UPDATED PROFILE
+  // ================================================================
+  logSection('STEP 4: VERIFY UPDATED PROFILE');
+  log('  Calling GET /auth/user again to verify the update', c.gray);
+
+  await test('Verify profile update', async () => {
+    const res = await apiCall('GET', '/auth/user', undefined, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      const userData = res.data.data as {
+        user?: { firstName?: string; lastName?: string };
+      };
+
+      if (userData.user?.firstName === 'UpdatedFirst' && userData.user?.lastName === 'UpdatedLast') {
+        log(`\n  ✅ Profile update verified!`, c.green);
+        return true;
+      }
+      log(`\n  ❌ Profile was not updated correctly`, c.red);
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 5: CHANGE PASSWORD VIA API
+  // ================================================================
+  logSection('STEP 5: CHANGE PASSWORD');
+  log('  Calling POST /auth/password/change - This verifies old password and updates in Clerk', c.gray);
+
+  await test('Change password via API', async () => {
+    const res = await apiCall('POST', '/auth/password/change', {
+      currentPassword: TEST_PASSWORD,
+      newPassword: NEW_PASSWORD
+    }, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      log(`\n  🔐 Password changed successfully!`, c.green);
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 6: LOGIN WITH NEW PASSWORD
+  // ================================================================
+  logSection('STEP 6: LOGIN WITH NEW PASSWORD');
+  log('  Calling POST /auth/login - This verifies password with Clerk', c.gray);
+
+  await test('Login with new password', async () => {
+    const res = await apiCall('POST', '/auth/login', {
+      email: TEST_EMAIL,
+      password: NEW_PASSWORD
+    });
+
+    if (res.status === 200 && res.data.success) {
+      const sessionData = res.data.data as {
+        user?: { email?: string; lastSignInAt?: string };
+        session?: { accessToken?: string; refreshToken?: string };
+      };
+
+      accessToken = sessionData.session?.accessToken || null;
+      refreshToken = sessionData.session?.refreshToken || null;
+
+      log(`\n  🎉 Login successful with new password!`, c.green);
+      log(`     Email: ${sessionData.user?.email}`, c.green);
+      log(`     Access Token: ${accessToken?.substring(0, 20)}...`, c.green);
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 7: GET CURRENT USER WITH /ME ENDPOINT
+  // ================================================================
+  logSection('STEP 7: VERIFY SESSION WITH /ME');
+  log('  Calling GET /auth/me to verify authentication', c.gray);
+
+  await test('Get current user via /me', async () => {
+    const res = await apiCall('GET', '/auth/me', undefined, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      const userData = res.data.data as {
+        userId?: string; email?: string;
+      };
+
+      log(`\n  👤 Current User:`, c.green);
+      log(`     User ID: ${userData.userId}`, c.green);
+      log(`     Email: ${userData.email}`, c.green);
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 8: LIST SESSIONS
+  // ================================================================
+  logSection('STEP 8: LIST USER SESSIONS');
+  log('  Calling GET /auth/sessions to see active sessions', c.gray);
+
+  await test('List user sessions', async () => {
+    const res = await apiCall('GET', '/auth/sessions', undefined, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      const sessions = res.data.data as Array<{ id: string; device: unknown; createdAt: string }>;
+
+      log(`\n  📱 Active Sessions: ${sessions.length}`, c.green);
+      sessions.forEach((s, i) => {
+        log(`     ${i + 1}. ID: ${s.id.substring(0, 8)}... Created: ${s.createdAt}`, c.green);
+      });
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 9: TEST REFRESH TOKEN
+  // ================================================================
+  logSection('STEP 9: REFRESH TOKEN');
+  log('  Calling POST /auth/refresh to get new access token', c.gray);
+
+  await test('Refresh access token', async () => {
+    if (!refreshToken) {
+      log('  No refresh token available', c.yellow);
+      return false;
+    }
+
+    const res = await apiCall('POST', '/auth/refresh', {
+      refreshToken: refreshToken
+    });
+
+    if (res.status === 200 && res.data.success) {
+      const tokenData = res.data.data as {
+        accessToken?: string; refreshToken?: string;
+      };
+
+      accessToken = tokenData.accessToken || accessToken;
+      refreshToken = tokenData.refreshToken || refreshToken;
+
+      log(`\n  🔄 Token refreshed!`, c.green);
+      log(`     New Access Token: ${accessToken?.substring(0, 20)}...`, c.green);
+
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 10: DELETE ACCOUNT
+  // ================================================================
+  logSection('STEP 10: DELETE ACCOUNT');
+  log('  Calling DELETE /auth/account - This verifies password and deletes from Clerk', c.gray);
+
+  await test('Delete account via API', async () => {
+    const res = await apiCall('DELETE', '/auth/account', {
+      password: NEW_PASSWORD
+    }, accessToken!);
+
+    if (res.status === 200 && res.data.success) {
+      log(`\n  🗑️ Account deleted successfully!`, c.green);
+      return true;
+    }
+    return false;
+  });
+
+  // ================================================================
+  // STEP 11: VERIFY DELETION - LOGIN SHOULD FAIL
+  // ================================================================
+  logSection('STEP 11: VERIFY ACCOUNT DELETED');
+  log('  Attempting to login with deleted account (should fail)', c.gray);
+
+  await test('Login with deleted account fails', async () => {
+    const res = await apiCall('POST', '/auth/login', {
+      email: TEST_EMAIL,
+      password: NEW_PASSWORD
+    });
+
+    if (res.status === 401) {
+      log(`\n  ✅ Login correctly rejected - account is deleted!`, c.green);
+      return true;
+    }
+    log(`\n  ❌ Login should have been rejected`, c.red);
+    return false;
+  });
+
+  // ================================================================
+  // SUMMARY
+  // ================================================================
+  console.log('\n\n');
+  if (failed === 0) {
+    log('╔══════════════════════════════════════════════════════════════════════╗', c.bright + c.green);
+    log('║              ALL E2E AUTHENTICATION TESTS PASSED!                    ║', c.bright + c.green);
+    log('╚══════════════════════════════════════════════════════════════════════╝', c.bright + c.green);
+  } else {
+    log('╔══════════════════════════════════════════════════════════════════════╗', c.bright + c.red);
+    log('║              SOME E2E TESTS FAILED                                   ║', c.bright + c.red);
+    log('╚══════════════════════════════════════════════════════════════════════╝', c.bright + c.red);
+  }
+
+  console.log('\n');
+  log('  ═══════════════════════════════════════════════════════════════════', c.cyan);
+  log('  TEST SUMMARY', c.bright + c.cyan);
+  log('  ═══════════════════════════════════════════════════════════════════', c.cyan);
+  console.log();
+  log(`  ✓ Passed: ${passed}`, c.green);
+  log(`  ✗ Failed: ${failed}`, failed > 0 ? c.red : c.gray);
+  log(`  Total: ${passed + failed}`, c.cyan);
+  console.log();
+  log('  Tests performed:', c.cyan);
+  log('  1. Sign up new user (API → Clerk.createUser)', c.gray);
+  log('  2. Get user profile (API → Clerk.getUser)', c.gray);
+  log('  3. Update user profile (API → Clerk.updateUser)', c.gray);
+  log('  4. Verify profile update', c.gray);
+  log('  5. Change password (API → Clerk.updateUser)', c.gray);
+  log('  6. Login with new password (API → Clerk.verifyPassword)', c.gray);
+  log('  7. Get current user /me', c.gray);
+  log('  8. List user sessions', c.gray);
+  log('  9. Refresh token', c.gray);
+  log('  10. Delete account (API → Clerk.deleteUser)', c.gray);
+  log('  11. Verify account deleted', c.gray);
+  console.log('\n');
+
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 // Check prerequisites
 async function checkPrerequisites() {
-  log('\nChecking prerequisites...', c.cyan);
+  log('\n📋 Checking prerequisites...', c.cyan);
 
-  // Check Clerk
+  // Check environment variables
   if (!process.env.CLERK_SECRET_KEY) {
     logError('CLERK_SECRET_KEY not set in .env');
     process.exit(1);
   }
   logSuccess('Clerk API key configured');
 
-  // Check Supabase
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     logError('Supabase not configured in .env');
     process.exit(1);
   }
   logSuccess('Supabase configured');
 
-  // Check server
+  // Check server is running
   try {
     const response = await fetch(`${BASE_URL}/api/health`);
     if (!response.ok) throw new Error('Server not healthy');
     logSuccess('Server is running');
   } catch {
-    logError('Server not running. Start with: npm run dev');
+    logError(`Server not running at ${BASE_URL}. Start with: npm run dev`);
     process.exit(1);
   }
+
+  console.log();
 }
 
 async function main() {
@@ -512,4 +511,7 @@ async function main() {
   await runTests();
 }
 
-main().catch(console.error);
+main().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
