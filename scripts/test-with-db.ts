@@ -73,6 +73,12 @@ async function runTests() {
     });
     teamId = team.id;
     if (!teamId) throw new Error('No team ID returned');
+    // Add owner as member
+    await teamsRepository.addMember({
+      team_id: teamId,
+      user_id: TEST_USER_ID,
+      role: 'owner'
+    });
   });
 
   await test('Find team by ID', async () => {
@@ -101,7 +107,7 @@ async function runTests() {
 
   await test('Get team members', async () => {
     const members = await teamsRepository.getMembers(teamId);
-    if (members.length < 2) throw new Error('Members not found');
+    if (members.length < 2) throw new Error('Expected at least 2 members (owner + member)');
   });
 
   await test('Remove team member', async () => {
@@ -229,7 +235,9 @@ async function runTests() {
     const webhook = await webhooksRepository.create({
       user_id: TEST_USER_ID,
       url: 'https://example.com/webhook',
-      events: ['user.created', 'user.updated']
+      secret: 'whsec_test_' + Date.now(),
+      events: ['user.created', 'user.updated'],
+      active: true
     });
     webhookId = webhook.id;
   });
@@ -245,12 +253,15 @@ async function runTests() {
   });
 
   await test('Record webhook delivery', async () => {
-    await webhooksRepository.recordDelivery({
+    await webhooksRepository.createDelivery({
       webhook_id: webhookId,
       event: 'user.created',
       payload: { test: true },
       status: 'success',
-      status_code: 200
+      status_code: 200,
+      response: null,
+      attempts: 1,
+      delivered_at: new Date().toISOString()
     });
   });
 
